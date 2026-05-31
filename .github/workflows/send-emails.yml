@@ -2,7 +2,7 @@ name: Send Pending Email Invites
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "* * * * *"
   workflow_dispatch:
 
 permissions:
