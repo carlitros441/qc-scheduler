@@ -68,9 +68,11 @@
             const protocols = await listDocs("protocols");
             return protocols.reduce((grouped, protocol) => {
                 const protocolName = protocol.name || protocol.protocol_id || protocol.product_type || "Unnamed Protocol";
-                grouped[protocolName] = grouped[protocolName] || [];
-                grouped[protocolName].push(...(protocol.tests || []));
-                grouped[protocolName] = [...new Set(grouped[protocolName])];
+                grouped[protocolName] = {
+                    ...protocol,
+                    display_name: protocolName,
+                    tests: [...new Set(protocol.tests || [])]
+                };
                 return grouped;
             }, {});
         };
@@ -170,19 +172,42 @@
         // TAB 1: CREATE SCHEDULE
         // =========================================================================
         const CreateScheduleTab = ({ personnel }) => {
+            const [products, setProducts] = useState([]);
             const [protocols, setProtocols] = useState({});
-            const [form, setForm] = useState({ product_id: '', batch_number: '', protocol_name: '' });
+            const [form, setForm] = useState({ product_id: '', product_name: '', batch_number: '', protocol_name: '' });
             const [testConfigs, setTestConfigs] = useState({});
             const [statusMsg, setStatusMsg] = useState(null);
 
             useEffect(() => {
+                listDocs("products").then(setProducts).catch(() => setProducts([]));
                 getGroupedProtocols().then(setProtocols).catch(() => setProtocols({}));
             }, []);
+
+            const selectedProduct = products.find(p => p.id === form.product_id);
+            const protocolOptions = Object.entries(protocols)
+                .filter(([, protocol]) => {
+                    if (!form.product_id) return false;
+                    if (protocol.product_id) return protocol.product_id === form.product_id;
+                    return protocol.product_type === selectedProduct?.name || protocol.product_type === selectedProduct?.product_type;
+                })
+                .sort(([a], [b]) => a.localeCompare(b));
+
+            const handleProductChange = (e) => {
+                const productId = e.target.value;
+                const product = products.find(p => p.id === productId);
+                setForm({
+                    ...form,
+                    product_id: productId,
+                    product_name: product?.name || '',
+                    protocol_name: ''
+                });
+                setTestConfigs({});
+            };
 
             const handleProductTypeChange = (e) => {
                 const type = e.target.value;
                 setForm({ ...form, protocol_name: type });
-                const requiredTests = protocols[type] || [];
+                const requiredTests = protocols[type]?.tests || [];
 
                 const newConfigs = {};
                 requiredTests.forEach(test => {
@@ -208,6 +233,7 @@
                         }
                         payload.push({
                             product_id: form.product_id,
+                            product_name: form.product_name,
                             batch_number: form.batch_number,
                             product_type: form.protocol_name,
                             protocol_name: form.protocol_name,
@@ -236,7 +262,7 @@
                         await addAuditEntry(id, "CREATE", null, schedule, "Initial schedule creation");
                     }));
                     setStatusMsg({type: 'success', text: "Schedules saved. Email invites will be sent automatically."});
-                    setForm({ product_id: '', batch_number: '', protocol_name: '' });
+                    setForm({ product_id: '', product_name: '', batch_number: '', protocol_name: '' });
                     setTestConfigs({});
                 } catch(err) {
                     setStatusMsg({type: 'error', text: "Error saving schedules."});
@@ -250,7 +276,10 @@
                         <div className="grid grid-cols-3 gap-4 bg-gray-50 p-4 rounded border">
                             <div>
                                 <label className="block text-sm font-bold mb-1 text-qcGray">Product ID</label>
-                                <input required className="w-full border p-2 rounded focus:ring-2 focus:ring-qcRed outline-none" type="text" value={form.product_id} onChange={e => setForm({...form, product_id: e.target.value})} />
+                                <select required className="w-full border p-2 rounded focus:ring-2 focus:ring-qcRed outline-none" value={form.product_id} onChange={handleProductChange}>
+                                    <option value="">-- Select Product --</option>
+                                    {products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
+                                </select>
                             </div>
                             <div>
                                 <label className="block text-sm font-bold mb-1 text-qcGray">Batch Number</label>
@@ -258,9 +287,9 @@
                             </div>
                             <div>
                                 <label className="block text-sm font-bold mb-1 text-qcGray">Protocol Name</label>
-                                <select required className="w-full border p-2 rounded focus:ring-2 focus:ring-qcRed outline-none" value={form.protocol_name} onChange={handleProductTypeChange}>
-                                    <option value="">-- Select Protocol --</option>
-                                    {Object.keys(protocols).map(pt => <option key={pt} value={pt}>{pt}</option>)}
+                                <select required disabled={!form.product_id} className="w-full border p-2 rounded focus:ring-2 focus:ring-qcRed outline-none disabled:bg-gray-100" value={form.protocol_name} onChange={handleProductTypeChange}>
+                                    <option value="">{form.product_id ? "-- Select Protocol --" : "-- Select Product First --"}</option>
+                                    {protocolOptions.map(([name]) => <option key={name} value={name}>{name}</option>)}
                                 </select>
                             </div>
                         </div>
@@ -506,15 +535,15 @@
             };
 
             const getPersonnelName = (id) => personnel.find(p=>p.id === id)?.name || "Unknown";
-            const productTypes = [...new Set(schedules.map(s => s.product_type))].filter(Boolean);
-            const productIds = [...new Set(schedules.map(s => s.product_id))].filter(Boolean);
+            const productTypes = [...new Set(schedules.map(s => s.protocol_name || s.product_type))].filter(Boolean);
+            const productIds = [...new Set(schedules.map(s => s.product_name || s.product_id))].filter(Boolean);
             const batchNumbers = [...new Set(schedules.map(s => s.batch_number))].filter(Boolean);
 
             let filtered = schedules.filter(s => {
                 return (filterStatus === "All" || s.status === filterStatus) &&
                        (filterAssignee === "All" || s.assignee_id === filterAssignee) &&
-                       (filterProductType === "All" || s.product_type === filterProductType) &&
-                       (filterProductId === "All" || s.product_id === filterProductId) &&
+                       (filterProductType === "All" || (s.protocol_name || s.product_type) === filterProductType) &&
+                       (filterProductId === "All" || (s.product_name || s.product_id) === filterProductId) &&
                        (filterBatchNumber === "All" || s.batch_number === filterBatchNumber);
             });
 
@@ -560,7 +589,7 @@
                             </select>
                         </div>
                         <div>
-                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Product ID</label>
+                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Product Name</label>
                             <select className="border p-2 rounded text-sm text-qcGray outline-none" value={filterProductId} onChange={e=>setFilterProductId(e.target.value)}>
                                 <option value="All">All Products</option>
                                 {productIds.map(pid => <option key={pid} value={pid}>{pid}</option>)}
@@ -583,7 +612,7 @@
                                         Test Name {sortField === 'test_name' && (sortOrder === 'asc' ? '^' : 'v')}
                                     </th>
                                     <th className="p-3 cursor-pointer select-none hover:bg-gray-200 transition-colors" onClick={() => toggleSort('product_id')}>
-                                        Product ID {sortField === 'product_id' && (sortOrder === 'asc' ? '^' : 'v')}
+                                        Product Name {sortField === 'product_id' && (sortOrder === 'asc' ? '^' : 'v')}
                                     </th>
                                     <th className="p-3 cursor-pointer select-none hover:bg-gray-200 transition-colors" onClick={() => toggleSort('batch_number')}>
                                         Batch Number {sortField === 'batch_number' && (sortOrder === 'asc' ? '^' : 'v')}
@@ -600,7 +629,7 @@
                                 {filtered.map(s => (
                                     <tr key={s.id} className="border-b hover:bg-gray-50 transition-colors">
                                         <td className="p-3 font-bold text-qcGray">{s.test_name}</td>
-                                        <td className="p-3">{s.product_id}</td>
+                                        <td className="p-3">{s.product_name || s.product_id}</td>
                                         <td className="p-3 font-mono text-sm">{s.batch_number}</td>
                                         <td className="p-3">{getPersonnelName(s.assignee_id)}</td>
                                         <td className="p-3 text-sm">
@@ -767,7 +796,7 @@
                                     <div className="grid grid-cols-2 gap-4 bg-gray-50 p-4 rounded border">
                                         <p><strong>Test Name:</strong> <br/>{selectedEvent.test_name}</p>
                                         <p><strong>Assignee:</strong> <br/>{selectedEvent.assignee_name}</p>
-                                        <p><strong>Product ID:</strong> <br/>{selectedEvent.product_id}</p>
+                                        <p><strong>Product:</strong> <br/>{selectedEvent.product_name || selectedEvent.product_id}</p>
                                         <p><strong>Batch:</strong> <br/>{selectedEvent.batch_number}</p>
                                         <p><strong>Protocol:</strong> <br/>{selectedEvent.protocol_name || selectedEvent.product_type}</p>
                                         <p>
@@ -823,7 +852,17 @@
             useEffect(() => { fetchData(); }, []);
 
             const saveItem = async (endpoint, payload, isEdit, id) => {
-                await saveDoc(endpoint, payload, isEdit ? id : null);
+                const cleanPayload = { ...payload };
+                if (endpoint === 'protocols') {
+                    if (!cleanPayload.product_id) {
+                        alert("Please select a product for this protocol.");
+                        return;
+                    }
+                    const linkedProduct = products.find(product => product.id === cleanPayload.product_id);
+                    cleanPayload.product_name = linkedProduct?.name || cleanPayload.product_name || '';
+                    cleanPayload.product_type = linkedProduct?.name || cleanPayload.product_type || '';
+                }
+                await saveDoc(endpoint, cleanPayload, isEdit ? id : null);
                 fetchData();
                 setProdEdit(null); setProtEdit(null);
             };
@@ -857,12 +896,12 @@
                     <div className="bg-white p-6 rounded shadow-md border-t-4 border-qcRed">
                         <div className="flex justify-between items-center mb-4 border-b pb-2">
                             <h2 className="text-xl font-bold text-qcGray">Protocols</h2>
-                            <button onClick={()=>setProtEdit({name:'', protocol_id:'', product_type:'', tests:[]})} className="bg-qcGray text-white px-4 py-2 rounded text-sm font-bold hover:bg-black transition-colors">+ Add Protocol</button>
+                            <button onClick={()=>setProtEdit({name:'', protocol_id:'', product_id:'', product_name:'', product_type:'', tests:[]})} className="bg-qcGray text-white px-4 py-2 rounded text-sm font-bold hover:bg-black transition-colors">+ Add Protocol</button>
                         </div>
                         <ul className="space-y-3">
                             {protocols.map(p => (
                                 <li key={p.id} className="border border-gray-200 p-4 rounded flex justify-between items-center bg-gray-50 hover:bg-white transition-colors">
-                                    <div><strong className="block text-lg text-qcRed">{p.name}</strong><span className="text-sm font-bold text-qcGray block">{p.product_type}</span><span className="text-xs text-gray-500 font-mono mt-1 block">Tests: {p.tests.join(', ')}</span></div>
+                                    <div><strong className="block text-lg text-qcRed">{p.name}</strong><span className="text-sm font-bold text-qcGray block">{p.product_name || p.product_type}</span><span className="text-xs text-gray-500 font-mono mt-1 block">Tests: {p.tests.join(', ')}</span></div>
                                     <div className="space-x-3 text-sm font-bold">
                                         <button onClick={()=>setProtEdit(p)} className="text-blue-600 hover:text-blue-800">Edit</button>
                                         <button onClick={()=>delItem('protocols', p.id)} className="text-red-600 hover:text-red-800">Delete</button>
@@ -886,7 +925,22 @@
                         <Modal title={protEdit.id ? "Edit Protocol" : "Add Protocol"} onClose={()=>setProtEdit(null)}>
                             <div className="space-y-4">
                                 <div><label className="text-sm font-bold text-qcGray">Protocol Name</label><input className="w-full border p-2 rounded outline-none focus:border-qcRed" value={protEdit.name} onChange={e=>setProtEdit({...protEdit, name: e.target.value})} /></div>
-                                <div><label className="text-sm font-bold text-qcGray">Product Type</label><input className="w-full border p-2 rounded outline-none focus:border-qcRed" value={protEdit.product_type} onChange={e=>setProtEdit({...protEdit, product_type: e.target.value})} /></div>
+                                <div>
+                                    <label className="text-sm font-bold text-qcGray">Product Name</label>
+                                    <select className="w-full border p-2 rounded outline-none focus:border-qcRed" value={protEdit.product_id || ''} onChange={e=>{
+                                        const product = products.find(p => p.id === e.target.value);
+                                        setProtEdit({
+                                            ...protEdit,
+                                            product_id: e.target.value,
+                                            product_name: product?.name || '',
+                                            product_type: product?.name || ''
+                                        });
+                                    }}>
+                                        <option value="">-- Select Product --</option>
+                                        {!protEdit.product_id && protEdit.product_type && <option value="" disabled>Current: {protEdit.product_type}</option>}
+                                        {products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
+                                    </select>
+                                </div>
                                 <div><label className="text-sm font-bold text-qcGray">Tests (comma separated)</label><input className="w-full border p-2 rounded font-mono outline-none focus:border-qcRed" value={protEdit.tests.join(', ')} onChange={e=>setProtEdit({...protEdit, tests: e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} /></div>
                                 <button onClick={()=>saveItem('protocols', protEdit, !!protEdit.id, protEdit.id)} className="bg-qcRed hover:bg-red-800 text-white px-4 py-3 w-full rounded font-bold mt-2 transition-colors">Save Protocol</button>
                             </div>
