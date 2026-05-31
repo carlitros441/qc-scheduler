@@ -2,31 +2,37 @@
 
 const admin = require("firebase-admin");
 const nodemailer = require("nodemailer");
-const { logger } = require("firebase-functions");
-const { defineSecret } = require("firebase-functions/params");
-const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 
-admin.initializeApp();
+const requiredEnv = [
+  "FIREBASE_SERVICE_ACCOUNT_JSON",
+  "SMTP_HOST",
+  "SMTP_PORT",
+  "SMTP_USER",
+  "SMTP_PASSWORD",
+  "MAIL_FROM"
+];
 
-const smtpHost = defineSecret("SMTP_HOST");
-const smtpPort = defineSecret("SMTP_PORT");
-const smtpUser = defineSecret("SMTP_USER");
-const smtpPassword = defineSecret("SMTP_PASSWORD");
-const mailFrom = defineSecret("MAIL_FROM");
-
-const EMAIL_SECRETS = [smtpHost, smtpPort, smtpUser, smtpPassword, mailFrom];
-
-function makeTransport() {
-  return nodemailer.createTransport({
-    host: smtpHost.value(),
-    port: Number(smtpPort.value() || 587),
-    secure: Number(smtpPort.value()) === 465,
-    auth: {
-      user: smtpUser.value(),
-      pass: smtpPassword.value()
-    }
-  });
+for (const name of requiredEnv) {
+  if (!process.env[name]) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
 }
+
+admin.initializeApp({
+  credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON))
+});
+
+const db = admin.firestore();
+
+const transport = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT || 587),
+  secure: Number(process.env.SMTP_PORT) === 465,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASSWORD
+  }
+});
 
 function calendarDate(date) {
   return date.toISOString().slice(0, 10).replace(/-/g, "");
@@ -45,7 +51,7 @@ function escapeText(value = "") {
 }
 
 function senderEmailAddress() {
-  const from = mailFrom.value();
+  const from = process.env.MAIL_FROM;
   const match = from.match(/<([^>]+)>/);
   return match ? match[1] : from;
 }
@@ -96,11 +102,7 @@ async function getAssignee(schedule) {
     throw new Error("Schedule has no assignee_id.");
   }
 
-  const personnelSnap = await admin.firestore()
-    .collection("personnel")
-    .doc(schedule.assignee_id)
-    .get();
-
+  const personnelSnap = await db.collection("personnel").doc(schedule.assignee_id).get();
   if (!personnelSnap.exists) {
     throw new Error(`Personnel record ${schedule.assignee_id} was not found.`);
   }
@@ -119,12 +121,11 @@ async function getAssignee(schedule) {
 async function sendScheduleInvite(scheduleId, schedule) {
   const assignee = await getAssignee(schedule);
   const calendarInvite = buildCalendarInvite(scheduleId, schedule, assignee);
-  const subject = `QC Test Assignment: ${schedule.test_name || "Schedule"}`;
 
-  await makeTransport().sendMail({
-    from: mailFrom.value(),
+  await transport.sendMail({
+    from: process.env.MAIL_FROM,
     to: assignee.email,
-    subject,
+    subject: `QC Test Assignment: ${schedule.test_name || "Schedule"}`,
     text: `Hello ${assignee.name},\n\nYou have been assigned a QC test: ${schedule.test_name || "Schedule"}.\nPlease find the calendar invite attached.`,
     icalEvent: {
       filename: "invite.ics",
@@ -133,70 +134,86 @@ async function sendScheduleInvite(scheduleId, schedule) {
     }
   });
 
-  await admin.firestore().collection("schedules").doc(scheduleId).set({
+  await db.collection("schedules").doc(scheduleId).set({
     email_status: "sent",
     email_sent_at: admin.firestore.FieldValue.serverTimestamp(),
     email_error: admin.firestore.FieldValue.delete()
   }, { merge: true });
 
-  logger.info("Schedule invite sent.", { scheduleId, to: assignee.email });
+  console.log(`Sent schedule invite ${scheduleId} to ${assignee.email}`);
 }
 
-exports.sendScheduleInviteOnCreate = onDocumentCreated({
-  document: "schedules/{scheduleId}",
-  region: "us-central1",
-  secrets: EMAIL_SECRETS
-}, async (event) => {
-  const scheduleId = event.params.scheduleId;
-  const schedule = event.data.data();
+async function processPendingSchedules() {
+  const snapshot = await db.collection("schedules")
+    .where("email_status", "==", "pending")
+    .limit(25)
+    .get();
 
-  try {
-    await sendScheduleInvite(scheduleId, schedule);
-  } catch (error) {
-    logger.error("Schedule invite failed.", { scheduleId, error: error.message });
-    await admin.firestore().collection("schedules").doc(scheduleId).set({
-      email_status: "failed",
-      email_error: error.message,
-      email_failed_at: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-  }
-});
-
-exports.resendScheduleInvite = onDocumentCreated({
-  document: "mailRequests/{requestId}",
-  region: "us-central1",
-  secrets: EMAIL_SECRETS
-}, async (event) => {
-  const requestId = event.params.requestId;
-  const request = event.data.data();
-  const scheduleId = request.schedule_id;
-
-  if (!scheduleId) {
-    await event.data.ref.set({
-      status: "failed",
-      error: "Missing schedule_id.",
-      completed_at: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-    return;
-  }
-
-  try {
-    const scheduleSnap = await admin.firestore().collection("schedules").doc(scheduleId).get();
-    if (!scheduleSnap.exists) {
-      throw new Error(`Schedule ${scheduleId} was not found.`);
+  for (const doc of snapshot.docs) {
+    try {
+      await doc.ref.set({
+        email_status: "processing",
+        email_processing_at: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      await sendScheduleInvite(doc.id, doc.data());
+    } catch (error) {
+      console.error(`Failed schedule invite ${doc.id}: ${error.message}`);
+      await doc.ref.set({
+        email_status: "failed",
+        email_error: error.message,
+        email_failed_at: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
     }
-
-    await sendScheduleInvite(scheduleId, scheduleSnap.data());
-    await event.data.ref.set({
-      status: "sent",
-      completed_at: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
-  } catch (error) {
-    logger.error("Requested invite resend failed.", { requestId, scheduleId, error: error.message });
-    await event.data.ref.set({
-      status: "failed",
-      error: error.message,
-      completed_at: admin.firestore.FieldValue.serverTimestamp()
-    }, { merge: true });
   }
-});
+}
+
+async function processMailRequests() {
+  const snapshot = await db.collection("mailRequests")
+    .where("status", "==", "pending")
+    .limit(25)
+    .get();
+
+  for (const doc of snapshot.docs) {
+    const request = doc.data();
+    try {
+      await doc.ref.set({
+        status: "processing",
+        processing_at: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      if (!request.schedule_id) {
+        throw new Error("Missing schedule_id.");
+      }
+
+      const scheduleSnap = await db.collection("schedules").doc(request.schedule_id).get();
+      if (!scheduleSnap.exists) {
+        throw new Error(`Schedule ${request.schedule_id} was not found.`);
+      }
+
+      await sendScheduleInvite(scheduleSnap.id, scheduleSnap.data());
+      await doc.ref.set({
+        status: "sent",
+        completed_at: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    } catch (error) {
+      console.error(`Failed mail request ${doc.id}: ${error.message}`);
+      await doc.ref.set({
+        status: "failed",
+        error: error.message,
+        completed_at: admin.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+    }
+  }
+}
+
+async function main() {
+  await processPendingSchedules();
+  await processMailRequests();
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

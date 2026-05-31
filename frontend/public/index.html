@@ -194,7 +194,11 @@
 
                 setStatusMsg({type: 'info', text: "Saving schedules..."});
                 try {
-                    await Promise.all(payload.map(item => saveDoc("schedules", { ...item, status: "Scheduled" })));
+                    await Promise.all(payload.map(item => saveDoc("schedules", {
+                        ...item,
+                        status: "Scheduled",
+                        email_status: "pending"
+                    })));
                     setStatusMsg({type: 'success', text: "Schedules saved. Email invites will be sent automatically."});
                     setForm({ product_id: '', batch_number: '', product_type: '' });
                     setTestConfigs({});

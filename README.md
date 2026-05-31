@@ -35,27 +35,22 @@ The app expects signed-in users to read and write these collections. All authori
 
 ## Automatic Email Invites
 
-Firebase Cloud Functions send calendar invites automatically when a schedule is created. The app also writes to `mailRequests` when a user clicks Resend Invite, and a second function sends that email.
+Email invites are sent by a GitHub Actions worker, not Firebase Cloud Functions. This avoids the Firebase Blaze/pay-as-you-go requirement.
 
-Set these Firebase Function secrets before deploying:
+How it works:
 
+1. New schedules are saved with `email_status: pending`.
+2. Users can click Resend Invite, which creates a `mailRequests` document.
+3. `.github/workflows/send-emails.yml` runs every 5 minutes and can also be run manually.
+4. The worker reads pending Firestore records, sends `.ics` calendar invites through SMTP, and marks records as `sent` or `failed`.
+
+Add these GitHub repository secrets:
+
+- `FIREBASE_SERVICE_ACCOUNT_JSON`, a Firebase Admin service account JSON for this project
 - `SMTP_HOST`, for example `smtp.gmail.com`
 - `SMTP_PORT`, usually `587`
 - `SMTP_USER`, the sending mailbox
 - `SMTP_PASSWORD`, an app password or SMTP password
-- `MAIL_FROM`, the sender shown on the email, for example `"QC Scheduler" <carlitros4@gmail.com>`
+- `MAIL_FROM`, the sender shown on the email, for example `"QC Scheduler" <sender@example.com>`
 
-Deploy functions and Firestore rules with:
-
-```powershell
-npx firebase-tools login
-npx firebase-tools use <your-firebase-project-id>
-npx firebase-tools functions:secrets:set SMTP_HOST
-npx firebase-tools functions:secrets:set SMTP_PORT
-npx firebase-tools functions:secrets:set SMTP_USER
-npx firebase-tools functions:secrets:set SMTP_PASSWORD
-npx firebase-tools functions:secrets:set MAIL_FROM
-npx firebase-tools deploy --only functions,firestore:rules
-```
-
-For Gmail, create an app password in your Google Account security settings and use that as `SMTP_PASSWORD`.
+For Gmail, create an app password in your Google Account security settings and use that as `SMTP_PASSWORD`. Do not commit service account JSON files or SMTP passwords.

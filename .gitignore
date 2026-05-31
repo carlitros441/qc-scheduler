@@ -5,6 +5,7 @@ __pycache__/
 .env
 .env.*
 serviceAccountKey.json
+service-account*.json
 firebase-config.js
 *.pem
 *.key
