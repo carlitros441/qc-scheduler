@@ -21,5 +21,13 @@ service cloud.firestore {
     match /personnel/{document} {
       allow read, write: if signedIn();
     }
+
+    match /mailRequests/{document} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.schedule_id is string
+        && request.resource.data.status == "pending";
+      allow update, delete: if false;
+    }
   }
 }

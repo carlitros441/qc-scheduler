@@ -27,7 +27,35 @@ Do not commit service account keys, admin SDK credentials, or SMTP passwords. Th
 - `products`
 - `protocols`
 - `personnel`
+- `mailRequests`
 
 The app expects signed-in users to read and write these collections. All authorized accounts connect to the same Firebase project and the same shared Firestore database.
 
 `firestore.rules` contains a starter rule set that allows only signed-in users to access the app collections. With these rules, account creation stays under your control in Firebase Auth while every signed-in user has access to the same database.
+
+## Automatic Email Invites
+
+Firebase Cloud Functions send calendar invites automatically when a schedule is created. The app also writes to `mailRequests` when a user clicks Resend Invite, and a second function sends that email.
+
+Set these Firebase Function secrets before deploying:
+
+- `SMTP_HOST`, for example `smtp.gmail.com`
+- `SMTP_PORT`, usually `587`
+- `SMTP_USER`, the sending mailbox
+- `SMTP_PASSWORD`, an app password or SMTP password
+- `MAIL_FROM`, the sender shown on the email, for example `"QC Scheduler" <carlitros4@gmail.com>`
+
+Deploy functions and Firestore rules with:
+
+```powershell
+npx firebase-tools login
+npx firebase-tools use <your-firebase-project-id>
+npx firebase-tools functions:secrets:set SMTP_HOST
+npx firebase-tools functions:secrets:set SMTP_PORT
+npx firebase-tools functions:secrets:set SMTP_USER
+npx firebase-tools functions:secrets:set SMTP_PASSWORD
+npx firebase-tools functions:secrets:set MAIL_FROM
+npx firebase-tools deploy --only functions,firestore:rules
+```
+
+For Gmail, create an app password in your Google Account security settings and use that as `SMTP_PASSWORD`.

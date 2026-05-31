@@ -195,7 +195,7 @@
                 setStatusMsg({type: 'info', text: "Saving schedules..."});
                 try {
                     await Promise.all(payload.map(item => saveDoc("schedules", { ...item, status: "Scheduled" })));
-                    setStatusMsg({type: 'success', text: "Schedules saved successfully."});
+                    setStatusMsg({type: 'success', text: "Schedules saved. Email invites will be sent automatically."});
                     setForm({ product_id: '', batch_number: '', product_type: '' });
                     setTestConfigs({});
                 } catch(err) {
@@ -367,9 +367,14 @@
                 fetchSchedules();
             };
 
-            const handleResend = async () => {
+            const handleResend = async (id) => {
                 try {
-                    setToast("Email invite sending requires a deployed mail service. Download the .ics file instead.");
+                    await saveDoc("mailRequests", {
+                        schedule_id: id,
+                        status: "pending",
+                        requested_by: auth.currentUser?.email || auth.currentUser?.uid || "unknown"
+                    });
+                    setToast("Invite resend requested.");
                     setTimeout(() => setToast(null), 4000);
                 } catch (e) {
                     setToast("Unable to prepare invite.");
