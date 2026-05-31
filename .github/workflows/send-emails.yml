@@ -2,7 +2,7 @@ name: Send Pending Email Invites
 
 on:
   schedule:
-    - cron: "* * * * *"
+    - cron: "1-59/5 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -28,7 +28,7 @@ jobs:
         working-directory: scripts/email-worker
         run: npm install --omit=dev
 
-      - name: Send pending invites
+      - name: Send pending invites once per minute
         working-directory: scripts/email-worker
         env:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
@@ -37,4 +37,12 @@ jobs:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           MAIL_FROM: ${{ secrets.MAIL_FROM }}
-        run: node send-emails.js
+        shell: bash
+        run: |
+          for minute in 1 2 3 4 5; do
+            echo "Email worker pass ${minute}/5"
+            node send-emails.js
+            if [ "$minute" != "5" ]; then
+              sleep 60
+            fi
+          done
