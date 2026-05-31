@@ -729,7 +729,7 @@
                     const events = filteredSchedules.map(s => {
                         const pName = personnel.find(p => p.id === s.assignee_id)?.name || "Unknown";
                         const initials = getInitials(pName);
-                        const title = `${initials}_${s.product_id}_${s.test_name}`;
+                        const title = `${initials}_${s.batch_number}_${s.test_name}`;
 
                         let startStr = s.start_time;
                         let endStr = s.end_time;
