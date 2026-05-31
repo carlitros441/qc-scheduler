@@ -1,8 +1,14 @@
 name: Send Pending Email Invites
 
 on:
+  push:
+    branches:
+      - master
+    paths:
+      - ".github/workflows/send-emails.yml"
+      - "scripts/email-worker/**"
   schedule:
-    - cron: "1-59/5 * * * *"
+    - cron: "1,6,11,16,21,26,31,36,41,46,51,56 * * * *"
   workflow_dispatch:
 
 permissions:
