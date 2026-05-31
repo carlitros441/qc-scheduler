@@ -63,7 +63,6 @@
         };
 
         const deleteDoc = (collectionName, id) => db.collection(collectionName).doc(id).delete();
-        const EM_DELTA_DAYS = [-4, -2, -1, 0, 5, 7, 14];
 
         const addDays = (dateString, deltaDays) => {
             if (!dateString) return "";
@@ -80,6 +79,7 @@
                     ...protocol,
                     display_name: protocolName,
                     protocol_type: protocol.protocol_type || "QC Sample Plan",
+                    em_tests: protocol.em_tests || [],
                     tests: [...new Set(protocol.tests || [])]
                 };
                 return grouped;
@@ -220,11 +220,17 @@
                 const type = e.target.value;
                 setForm({ ...form, protocol_name: type });
                 const protocol = protocols[type];
-                const requiredTests = protocol?.tests || [];
+                const requiredTests = protocol?.protocol_type === "EM Protocol" && protocol?.em_tests?.length
+                    ? protocol.em_tests.map(item => item.name).filter(Boolean)
+                    : (protocol?.tests || []);
                 const isEm = protocol?.protocol_type === "EM Protocol";
+                const emDeltaByName = (protocol?.em_tests || []).reduce((acc, item) => {
+                    if (item.name) acc[item.name] = Number(item.delta_day || 0);
+                    return acc;
+                }, {});
 
                 const newConfigs = {};
-                requiredTests.forEach((test, index) => {
+                requiredTests.forEach((test) => {
                     newConfigs[test] = {
                         include: isEm,
                         assignee_id: '',
@@ -232,7 +238,7 @@
                         start_time: '',
                         end_time: '',
                         duration_days: 1,
-                        delta_day: isEm ? EM_DELTA_DAYS[index % EM_DELTA_DAYS.length] : 0
+                        delta_day: isEm ? (emDeltaByName[test] ?? 0) : 0
                     };
                 });
                 setTestConfigs(newConfigs);
@@ -380,9 +386,10 @@
 
                                         {isEmProtocol ? (
                                             <>
-                                                <select disabled={!config.include} required={config.include} className="border p-2 rounded flex-1 min-w-[120px] text-sm outline-none focus:border-qcRed" value={config.delta_day} onChange={e=>handleDeltaDayChange(testName, e.target.value)}>
-                                                    {EM_DELTA_DAYS.map(day => <option key={day} value={day}>Day {day}</option>)}
-                                                </select>
+                                                <label className="flex items-center gap-2 text-sm font-bold">
+                                                    Delta Day
+                                                    <input disabled={!config.include} required={config.include} type="number" step="1" className="border p-2 rounded w-24 text-sm outline-none focus:border-qcRed" value={config.delta_day} onChange={e=>handleDeltaDayChange(testName, e.target.value)} />
+                                                </label>
                                                 <input disabled required={config.include} type="date" className="border p-2 rounded flex-1 min-w-[140px] text-sm bg-gray-100" value={config.start_time} title="Execution Date" />
                                             </>
                                         ) : (
@@ -1029,6 +1036,19 @@
                     cleanPayload.product_name = linkedProduct?.name || cleanPayload.product_name || '';
                     cleanPayload.product_type = linkedProduct?.name || cleanPayload.product_type || '';
                     cleanPayload.protocol_type = cleanPayload.protocol_type || 'QC Sample Plan';
+                    if (cleanPayload.protocol_type === 'EM Protocol') {
+                        cleanPayload.em_tests = (cleanPayload.em_tests || [])
+                            .map(item => ({ name: (item.name || '').trim(), delta_day: Number(item.delta_day || 0) }))
+                            .filter(item => item.name);
+                        cleanPayload.tests = cleanPayload.em_tests.map(item => item.name);
+                        if (cleanPayload.em_tests.length === 0) {
+                            alert("Please add at least one EM test.");
+                            return;
+                        }
+                    } else {
+                        cleanPayload.tests = (cleanPayload.tests || []).map(test => String(test).trim()).filter(Boolean);
+                        cleanPayload.em_tests = [];
+                    }
                 }
                 await saveDoc(endpoint, cleanPayload, isEdit ? id : null);
                 fetchData();
@@ -1069,7 +1089,7 @@
                     <div className="bg-white p-6 rounded shadow-md border-t-4 border-qcRed">
                         <div className="flex justify-between items-center mb-4 border-b pb-2">
                             <h2 className="text-xl font-bold text-qcGray">Protocols</h2>
-                            <button onClick={()=>setProtEdit({name:'', protocol_id:'', protocol_type:'QC Sample Plan', product_id:'', product_name:'', product_type:'', tests:[]})} className="bg-qcGray text-white px-4 py-2 rounded text-sm font-bold hover:bg-black transition-colors">+ Add Protocol</button>
+                            <button onClick={()=>setProtEdit({name:'', protocol_id:'', protocol_type:'QC Sample Plan', product_id:'', product_name:'', product_type:'', tests:[], em_tests:[]})} className="bg-qcGray text-white px-4 py-2 rounded text-sm font-bold hover:bg-black transition-colors">+ Add Protocol</button>
                         </div>
                         <div className="space-y-6">
                             {Object.entries(protocolGroups).map(([groupName, items]) => (
@@ -1078,9 +1098,9 @@
                                     <ul className="space-y-3">
                                         {items.map(p => (
                                             <li key={p.id} className="border border-gray-200 p-4 rounded flex justify-between items-center bg-gray-50 hover:bg-white transition-colors">
-                                                <div><strong className="block text-lg text-qcRed">{p.name}</strong><span className="text-sm font-bold text-qcGray block">{p.product_name || p.product_type}</span><span className="text-xs text-gray-500 font-mono mt-1 block">Tests: {p.tests.join(', ')}</span></div>
+                                                <div><strong className="block text-lg text-qcRed">{p.name}</strong><span className="text-sm font-bold text-qcGray block">{p.product_name || p.product_type}</span><span className="text-xs text-gray-500 font-mono mt-1 block">Tests: {(p.em_tests?.length ? p.em_tests.map(t => `${t.name} (Day ${t.delta_day})`) : p.tests).join(', ')}</span></div>
                                                 <div className="space-x-3 text-sm font-bold">
-                                                    <button onClick={()=>setProtEdit({...p, protocol_type: p.protocol_type || 'QC Sample Plan'})} className="text-blue-600 hover:text-blue-800">Edit</button>
+                                                    <button onClick={()=>setProtEdit({...p, protocol_type: p.protocol_type || 'QC Sample Plan', em_tests: p.em_tests || (p.tests || []).map(name => ({ name, delta_day: 0 }))})} className="text-blue-600 hover:text-blue-800">Edit</button>
                                                     <button onClick={()=>delItem('protocols', p.id)} className="text-red-600 hover:text-red-800">Delete</button>
                                                 </div>
                                             </li>
@@ -1129,7 +1149,35 @@
                                         {products.map(product => <option key={product.id} value={product.id}>{product.name}</option>)}
                                     </select>
                                 </div>
-                                <div><label className="text-sm font-bold text-qcGray">Tests (comma separated)</label><input className="w-full border p-2 rounded font-mono outline-none focus:border-qcRed" value={protEdit.tests.join(', ')} onChange={e=>setProtEdit({...protEdit, tests: e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} /></div>
+                                {(protEdit.protocol_type || 'QC Sample Plan') === 'EM Protocol' ? (
+                                    <div className="space-y-3">
+                                        <div className="flex justify-between items-center">
+                                            <label className="text-sm font-bold text-qcGray">EM Tests and Delta Days</label>
+                                            <button type="button" onClick={()=>setProtEdit({...protEdit, em_tests:[...(protEdit.em_tests || []), {name:'', delta_day:0}]})} className="bg-qcGray text-white px-3 py-1 rounded text-xs font-bold">+ Add Test</button>
+                                        </div>
+                                        {(protEdit.em_tests || []).map((item, index) => (
+                                            <div key={index} className="grid grid-cols-[1fr_120px_auto] gap-2 items-center">
+                                                <input className="border p-2 rounded outline-none focus:border-qcRed" placeholder="Test name" value={item.name} onChange={e=>{
+                                                    const emTests = [...(protEdit.em_tests || [])];
+                                                    emTests[index] = {...emTests[index], name:e.target.value};
+                                                    setProtEdit({...protEdit, em_tests:emTests});
+                                                }} />
+                                                <input className="border p-2 rounded outline-none focus:border-qcRed" type="number" step="1" placeholder="Delta day" value={item.delta_day} onChange={e=>{
+                                                    const emTests = [...(protEdit.em_tests || [])];
+                                                    emTests[index] = {...emTests[index], delta_day:Number(e.target.value || 0)};
+                                                    setProtEdit({...protEdit, em_tests:emTests});
+                                                }} />
+                                                <button type="button" onClick={()=>{
+                                                    const emTests = (protEdit.em_tests || []).filter((_, i) => i !== index);
+                                                    setProtEdit({...protEdit, em_tests:emTests});
+                                                }} className="text-red-600 hover:text-red-800 font-bold text-sm">Remove</button>
+                                            </div>
+                                        ))}
+                                        {(protEdit.em_tests || []).length === 0 && <p className="text-sm text-gray-500 font-bold">Add EM tests with any delta day, such as -4, 0, 5, or 21.</p>}
+                                    </div>
+                                ) : (
+                                    <div><label className="text-sm font-bold text-qcGray">Tests (comma separated)</label><input className="w-full border p-2 rounded font-mono outline-none focus:border-qcRed" value={protEdit.tests.join(', ')} onChange={e=>setProtEdit({...protEdit, tests: e.target.value.split(',').map(s=>s.trim()).filter(Boolean)})} /></div>
+                                )}
                                 <button onClick={()=>saveItem('protocols', protEdit, !!protEdit.id, protEdit.id)} className="bg-qcRed hover:bg-red-800 text-white px-4 py-3 w-full rounded font-bold mt-2 transition-colors">Save Protocol</button>
                             </div>
                         </Modal>
