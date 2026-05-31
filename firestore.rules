@@ -1,0 +1,25 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    match /schedules/{document} {
+      allow read, write: if signedIn();
+    }
+
+    match /products/{document} {
+      allow read, write: if signedIn();
+    }
+
+    match /protocols/{document} {
+      allow read, write: if signedIn();
+    }
+
+    match /personnel/{document} {
+      allow read, write: if signedIn();
+    }
+  }
+}

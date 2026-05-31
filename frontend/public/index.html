@@ -8,6 +8,10 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.10/index.global.min.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+    <script src="./firebase-config.js"></script>
     <script>
         tailwind.config = {
             theme: {
@@ -28,8 +32,98 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        // UPDATED API_URL TO POINT TO YOUR LOCAL IP
-        const API_URL = "http://172.16.11.51:8000/api";
+        const firebaseConfig = window.FIREBASE_CONFIG || {};
+        const missingFirebaseConfig = !firebaseConfig.apiKey || !firebaseConfig.projectId;
+        const firebaseApp = missingFirebaseConfig ? null : firebase.initializeApp(firebaseConfig);
+        const auth = firebaseApp ? firebase.auth() : null;
+        const db = firebaseApp ? firebase.firestore() : null;
+
+        const toDoc = (doc) => ({ id: doc.id, ...doc.data() });
+
+        const listDocs = async (collectionName, orderByField = null, direction = "asc") => {
+            let query = db.collection(collectionName);
+            if (orderByField) query = query.orderBy(orderByField, direction);
+            const snapshot = await query.get();
+            return snapshot.docs.map(toDoc);
+        };
+
+        const saveDoc = async (collectionName, payload, id = null) => {
+            const cleanPayload = { ...payload };
+            delete cleanPayload.id;
+            cleanPayload.updated_at = firebase.firestore.FieldValue.serverTimestamp();
+            if (id) {
+                await db.collection(collectionName).doc(id).set(cleanPayload);
+                return id;
+            }
+            const ref = await db.collection(collectionName).add({
+                ...cleanPayload,
+                created_at: firebase.firestore.FieldValue.serverTimestamp()
+            });
+            return ref.id;
+        };
+
+        const deleteDoc = (collectionName, id) => db.collection(collectionName).doc(id).delete();
+
+        const getGroupedProtocols = async () => {
+            const protocols = await listDocs("protocols");
+            return protocols.reduce((grouped, protocol) => {
+                const productType = protocol.product_type || "Unknown";
+                grouped[productType] = grouped[productType] || [];
+                grouped[productType].push(...(protocol.tests || []));
+                grouped[productType] = [...new Set(grouped[productType])];
+                return grouped;
+            }, {});
+        };
+
+        const makeIcs = (schedule, personnel) => {
+            const assignee = personnel.find(p => p.id === schedule.assignee_id) || {};
+            const escapeText = (value = "") => String(value).replace(/,/g, "\\,").replace(/;/g, "\\;").replace(/\n/g, "\\n");
+            const stamp = new Date().toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+            const uid = `${schedule.id || crypto.randomUUID()}@qc-scheduler`;
+            const summary = `${escapeText(schedule.product_id)} ${escapeText(schedule.test_name)}`.trim();
+            let startLine;
+            let endLine;
+
+            if (schedule.is_all_day) {
+                const start = new Date(`${schedule.start_time.split("T")[0]}T00:00:00`);
+                const end = new Date(start);
+                end.setDate(end.getDate() + (schedule.duration_days || 1));
+                const formatDate = (date) => date.toISOString().slice(0, 10).replace(/-/g, "");
+                startLine = `DTSTART;VALUE=DATE:${formatDate(start)}`;
+                endLine = `DTEND;VALUE=DATE:${formatDate(end)}`;
+            } else {
+                const formatDateTime = (value) => new Date(value).toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+                startLine = `DTSTART:${formatDateTime(schedule.start_time)}`;
+                endLine = `DTEND:${formatDateTime(schedule.end_time)}`;
+            }
+
+            return [
+                "BEGIN:VCALENDAR",
+                "VERSION:2.0",
+                "PRODID:-//QC Scheduler//EN",
+                "BEGIN:VEVENT",
+                `UID:${uid}`,
+                `DTSTAMP:${stamp}`,
+                startLine,
+                endLine,
+                `SUMMARY:${summary}`,
+                `DESCRIPTION:Product: ${escapeText(schedule.product_id)} | Batch: ${escapeText(schedule.batch_number)}\\nProduct Type: ${escapeText(schedule.product_type)}\\nAssigned To: ${escapeText(assignee.name || "Unknown")} (${escapeText(assignee.email || "")})`,
+                "LOCATION:QC Laboratory",
+                "STATUS:CONFIRMED",
+                "END:VEVENT",
+                "END:VCALENDAR"
+            ].join("\r\n");
+        };
+
+        const downloadIcs = (schedule, personnel) => {
+            const blob = new Blob([makeIcs(schedule, personnel)], { type: "text/calendar;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = `${schedule.id || "schedule"}.ics`;
+            link.click();
+            URL.revokeObjectURL(url);
+        };
 
         // ---- Generic Modal Component ----
         const Modal = ({ title, children, onClose }) => (
@@ -52,7 +146,7 @@
             const [statusMsg, setStatusMsg] = useState(null);
 
             useEffect(() => {
-                fetch(`${API_URL}/test-protocols`).then(r => r.json()).then(setProtocols);
+                getGroupedProtocols().then(setProtocols).catch(() => setProtocols({}));
             }, []);
 
             const handleProductTypeChange = (e) => {
@@ -98,22 +192,14 @@
 
                 if(payload.length === 0) return alert("No tests selected. Please include at least one test.");
 
-                setStatusMsg({type: 'info', text: "Saving and sending emails..."});
+                setStatusMsg({type: 'info', text: "Saving schedules..."});
                 try {
-                    const res = await fetch(`${API_URL}/schedule/save`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-
-                    if (res.ok) {
-                        setStatusMsg({type: 'success', text: "Schedules saved and calendar invites emailed successfully."});
-                        setForm({ product_id: '', batch_number: '', product_type: '' });
-                        setTestConfigs({});
-                    } else {
-                        setStatusMsg({type: 'error', text: "Error saving schedules."});
-                    }
+                    await Promise.all(payload.map(item => saveDoc("schedules", { ...item, status: "Scheduled" })));
+                    setStatusMsg({type: 'success', text: "Schedules saved successfully."});
+                    setForm({ product_id: '', batch_number: '', product_type: '' });
+                    setTestConfigs({});
                 } catch(err) {
-                    setStatusMsg({type: 'error', text: "Network error saving schedules."});
+                    setStatusMsg({type: 'error', text: "Error saving schedules."});
                 }
             };
 
@@ -268,34 +354,31 @@
 
             window.personnelList = personnel; // hack for shared component
 
-            const fetchSchedules = () => fetch(`${API_URL}/schedules`).then(r => r.json()).then(setSchedules);
+            const fetchSchedules = () => listDocs("schedules", "start_time", "desc").then(setSchedules);
             useEffect(() => { fetchSchedules(); }, []);
 
-            const action = async (url, method) => {
-                await fetch(`${API_URL}${url}`, { method });
+            const action = async (id, type) => {
+                if (type === "complete") {
+                    await db.collection("schedules").doc(id).update({ status: "Completed" });
+                }
+                if (type === "delete") {
+                    await deleteDoc("schedules", id);
+                }
                 fetchSchedules();
             };
 
-            const handleResend = async (id) => {
+            const handleResend = async () => {
                 try {
-                    const res = await fetch(`${API_URL}/schedule/${id}/resend`, { method: 'POST' });
-                    if (res.ok) {
-                        setToast("Invite resent successfully!");
-                        setTimeout(() => setToast(null), 3000);
-                    } else {
-                        setToast("Failed to resend invite.");
-                        setTimeout(() => setToast(null), 3000);
-                    }
+                    setToast("Email invite sending requires a deployed mail service. Download the .ics file instead.");
+                    setTimeout(() => setToast(null), 4000);
                 } catch (e) {
-                    setToast("Network error resending invite.");
+                    setToast("Unable to prepare invite.");
                     setTimeout(() => setToast(null), 3000);
                 }
             };
 
             const handleEditSave = async (updatedItem) => {
-                await fetch(`${API_URL}/schedule/${updatedItem.id}`, {
-                    method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(updatedItem)
-                });
+                await saveDoc("schedules", updatedItem, updatedItem.id);
                 setEditItem(null);
                 fetchSchedules();
             };
@@ -383,17 +466,17 @@
                             <thead>
                                 <tr className="bg-gray-100 border-b-2 border-qcRed">
                                     <th className="p-3 cursor-pointer select-none hover:bg-gray-200 transition-colors" onClick={() => toggleSort('test_name')}>
-                                        Test Name {sortField === 'test_name' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                        Test Name {sortField === 'test_name' && (sortOrder === 'asc' ? '^' : 'v')}
                                     </th>
                                     <th className="p-3 cursor-pointer select-none hover:bg-gray-200 transition-colors" onClick={() => toggleSort('product_id')}>
-                                        Product ID {sortField === 'product_id' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                        Product ID {sortField === 'product_id' && (sortOrder === 'asc' ? '^' : 'v')}
                                     </th>
                                     <th className="p-3 cursor-pointer select-none hover:bg-gray-200 transition-colors" onClick={() => toggleSort('batch_number')}>
-                                        Batch Number {sortField === 'batch_number' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                        Batch Number {sortField === 'batch_number' && (sortOrder === 'asc' ? '^' : 'v')}
                                     </th>
                                     <th className="p-3">Assignee</th>
                                     <th className="p-3 cursor-pointer select-none hover:bg-gray-200 transition-colors" onClick={() => toggleSort('start_time')}>
-                                        Date(s) {sortField === 'start_time' && (sortOrder === 'asc' ? '↑' : '↓')}
+                                        Date(s) {sortField === 'start_time' && (sortOrder === 'asc' ? '^' : 'v')}
                                     </th>
                                     <th className="p-3">Status</th>
                                     <th className="p-3 text-center">Actions</th>
@@ -414,10 +497,10 @@
                                         </td>
                                         <td className="p-3 space-x-2 text-sm font-bold text-center whitespace-nowrap">
                                             <button onClick={()=>setEditItem(s)} className="text-blue-600 hover:text-blue-800">Edit</button>
-                                            {s.status !== 'Completed' && <button onClick={()=>action(`/schedule/${s.id}/complete`, 'PUT')} className="text-green-600 hover:text-green-800">Complete</button>}
-                                            <button onClick={()=>action(`/schedule/${s.id}`, 'DELETE')} className="text-red-600 hover:text-red-800">Delete</button>
+                                            {s.status !== 'Completed' && <button onClick={()=>action(s.id, 'complete')} className="text-green-600 hover:text-green-800">Complete</button>}
+                                            <button onClick={()=>action(s.id, 'delete')} className="text-red-600 hover:text-red-800">Delete</button>
                                             <button onClick={()=>handleResend(s.id)} className="text-indigo-600 hover:text-indigo-800">Resend Invite</button>
-                                            <a href={`${API_URL}/schedule/${s.id}/ics`} download className="text-qcGray hover:text-qcRed inline-block bg-gray-200 px-2 py-1 rounded">.ics</a>
+                                            <button onClick={()=>downloadIcs(s, personnel)} className="text-qcGray hover:text-qcRed inline-block bg-gray-200 px-2 py-1 rounded">.ics</button>
                                         </td>
                                     </tr>
                                 ))}
@@ -450,7 +533,7 @@
             window.personnelList = personnel; // hack for shared component
 
             const fetchSchedules = () => {
-                fetch(`${API_URL}/schedules`).then(r => r.json()).then(setSchedules);
+                listDocs("schedules", "start_time", "desc").then(setSchedules);
             };
             useEffect(() => { fetchSchedules(); }, []);
 
@@ -513,15 +596,13 @@
             }, [schedules, personnel]);
 
             const markComplete = async (id) => {
-                await fetch(`${API_URL}/schedule/${id}/complete`, { method: 'PUT' });
+                await db.collection("schedules").doc(id).update({ status: "Completed" });
                 setSelectedEvent(null);
                 fetchSchedules();
             };
 
             const saveEdit = async (updatedItem) => {
-                await fetch(`${API_URL}/schedule/${updatedItem.id}`, {
-                    method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(updatedItem)
-                });
+                await saveDoc("schedules", updatedItem, updatedItem.id);
                 setSelectedEvent(null);
                 setIsEditing(false);
                 fetchSchedules();
@@ -596,22 +677,20 @@
             const [protEdit, setProtEdit] = useState(null);
 
             const fetchData = () => {
-                fetch(`${API_URL}/products`).then(r => r.json()).then(setProducts);
-                fetch(`${API_URL}/protocols`).then(r => r.json()).then(setProtocols);
+                listDocs("products").then(setProducts);
+                listDocs("protocols").then(setProtocols);
             };
             useEffect(() => { fetchData(); }, []);
 
             const saveItem = async (endpoint, payload, isEdit, id) => {
-                await fetch(`${API_URL}/${endpoint}${isEdit ? '/'+id : ''}`, {
-                    method: isEdit ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
-                });
+                await saveDoc(endpoint, payload, isEdit ? id : null);
                 fetchData();
                 setProdEdit(null); setProtEdit(null);
             };
 
             const delItem = async (endpoint, id) => {
                 if(!confirm("Are you sure you want to delete this?")) return;
-                await fetch(`${API_URL}/${endpoint}/${id}`, { method: 'DELETE' });
+                await deleteDoc(endpoint, id);
                 fetchData();
             };
 
@@ -684,16 +763,14 @@
             const [editItem, setEditItem] = useState(null);
 
             const saveItem = async () => {
-                await fetch(`${API_URL}/personnel${editItem.id ? '/'+editItem.id : ''}`, {
-                    method: editItem.id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(editItem)
-                });
+                await saveDoc("personnel", editItem, editItem.id || null);
                 fetchPersonnel();
                 setEditItem(null);
             };
 
             const delItem = async (id) => {
                 if(!confirm("Are you sure you want to delete this analyst?")) return;
-                await fetch(`${API_URL}/personnel/${id}`, { method: 'DELETE' });
+                await deleteDoc("personnel", id);
                 fetchPersonnel();
             };
 
@@ -740,17 +817,95 @@
             );
         };
 
+        const ConfigRequired = () => (
+            <div className="min-h-screen flex items-center justify-center p-6">
+                <div className="bg-white border-t-4 border-qcRed rounded shadow-md max-w-xl w-full p-6">
+                    <h1 className="text-2xl font-black text-qcGray mb-3">Firebase setup required</h1>
+                    <p className="text-qcGray mb-4">
+                        Add your Firebase Web App config to <span className="font-mono bg-gray-100 px-1">firebase-config.js</span> before publishing.
+                    </p>
+                    <p className="text-sm text-gray-600">
+                        Use <span className="font-mono bg-gray-100 px-1">firebase-config.example.js</span> as the template. Do not upload a service account key.
+                    </p>
+                </div>
+            </div>
+        );
+
+        const AuthScreen = () => {
+            const [email, setEmail] = useState("");
+            const [password, setPassword] = useState("");
+            const [mode, setMode] = useState("sign-in");
+            const [error, setError] = useState("");
+            const [loading, setLoading] = useState(false);
+
+            const submit = async (e) => {
+                e.preventDefault();
+                setError("");
+                setLoading(true);
+                try {
+                    if (mode === "register") {
+                        await auth.createUserWithEmailAndPassword(email, password);
+                    } else {
+                        await auth.signInWithEmailAndPassword(email, password);
+                    }
+                } catch (err) {
+                    setError(err.message || "Authentication failed.");
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            return (
+                <div className="min-h-screen flex items-center justify-center p-6 bg-qcBg">
+                    <form onSubmit={submit} className="bg-white border-t-4 border-qcRed rounded shadow-md max-w-md w-full p-6 space-y-4">
+                        <div>
+                            <h1 className="text-2xl font-black text-qcGray">QC Scheduler</h1>
+                            <p className="text-sm text-gray-600 mt-1">{mode === "register" ? "Create an authorized account." : "Sign in to continue."}</p>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-qcGray mb-1">Email</label>
+                            <input type="email" required className="w-full border p-3 rounded outline-none focus:border-qcRed" value={email} onChange={e=>setEmail(e.target.value)} />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-bold text-qcGray mb-1">Password</label>
+                            <input type="password" required minLength="6" className="w-full border p-3 rounded outline-none focus:border-qcRed" value={password} onChange={e=>setPassword(e.target.value)} />
+                        </div>
+                        {error && <p className="bg-red-50 border border-red-200 text-red-700 p-3 rounded text-sm font-bold">{error}</p>}
+                        <button disabled={loading} className="bg-qcRed hover:bg-red-800 disabled:opacity-60 text-white px-4 py-3 w-full rounded font-bold transition-colors">
+                            {loading ? "Please wait..." : (mode === "register" ? "Create Account" : "Sign In")}
+                        </button>
+                        <button type="button" onClick={()=>setMode(mode === "register" ? "sign-in" : "register")} className="text-qcGray hover:text-qcRed text-sm font-bold w-full">
+                            {mode === "register" ? "Use an existing account" : "Create a new account"}
+                        </button>
+                    </form>
+                </div>
+            );
+        };
+
         // =========================================================================
         // MAIN APP COMPONENT
         // =========================================================================
         const App = () => {
             const [activeTab, setActiveTab] = useState("Create Schedule");
             const [personnel, setPersonnel] = useState([]);
+            const [user, setUser] = useState(null);
+            const [authReady, setAuthReady] = useState(false);
 
-            const fetchPersonnel = () => fetch(`${API_URL}/personnel`).then(r => r.json()).then(setPersonnel);
-            useEffect(() => { fetchPersonnel(); }, []);
+            const fetchPersonnel = () => listDocs("personnel").then(setPersonnel);
+            useEffect(() => {
+                if (!auth) return;
+                return auth.onAuthStateChanged(currentUser => {
+                    setUser(currentUser);
+                    setAuthReady(true);
+                });
+            }, []);
+            useEffect(() => { if (user) fetchPersonnel(); }, [user]);
 
             const TABS = ["Create Schedule", "Schedules", "Products & Protocols", "Personnel", "Calendar View"];
+
+            if (missingFirebaseConfig) return <ConfigRequired />;
+            if (!authReady) return <div className="min-h-screen flex items-center justify-center font-bold text-qcGray">Loading...</div>;
+            if (!user) return <AuthScreen />;
 
             return (
                 <div>
@@ -769,6 +924,7 @@
                                         {tab}
                                     </button>
                                 ))}
+                                <button onClick={() => auth.signOut()} className="px-4 py-2 rounded font-bold transition-all hover:bg-gray-700 text-gray-300">Sign Out</button>
                             </div>
                         </div>
                     </nav>
