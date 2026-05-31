@@ -1,0 +1,19 @@
+name: Schedule Email Worker
+
+on:
+  schedule:
+    - cron: "1,6,11,16,21,26,31,36,41,46,51,56 * * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  start-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Start email worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run send-emails.yml --repo "${{ github.repository }}"
