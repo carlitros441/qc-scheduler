@@ -834,7 +834,6 @@
         const AuthScreen = () => {
             const [email, setEmail] = useState("");
             const [password, setPassword] = useState("");
-            const [mode, setMode] = useState("sign-in");
             const [error, setError] = useState("");
             const [loading, setLoading] = useState(false);
 
@@ -843,11 +842,7 @@
                 setError("");
                 setLoading(true);
                 try {
-                    if (mode === "register") {
-                        await auth.createUserWithEmailAndPassword(email, password);
-                    } else {
-                        await auth.signInWithEmailAndPassword(email, password);
-                    }
+                    await auth.signInWithEmailAndPassword(email, password);
                 } catch (err) {
                     setError(err.message || "Authentication failed.");
                 } finally {
@@ -860,7 +855,7 @@
                     <form onSubmit={submit} className="bg-white border-t-4 border-qcRed rounded shadow-md max-w-md w-full p-6 space-y-4">
                         <div>
                             <h1 className="text-2xl font-black text-qcGray">QC Scheduler</h1>
-                            <p className="text-sm text-gray-600 mt-1">{mode === "register" ? "Create an authorized account." : "Sign in to continue."}</p>
+                            <p className="text-sm text-gray-600 mt-1">Sign in with an account created by the administrator.</p>
                         </div>
                         <div>
                             <label className="block text-sm font-bold text-qcGray mb-1">Email</label>
@@ -872,10 +867,7 @@
                         </div>
                         {error && <p className="bg-red-50 border border-red-200 text-red-700 p-3 rounded text-sm font-bold">{error}</p>}
                         <button disabled={loading} className="bg-qcRed hover:bg-red-800 disabled:opacity-60 text-white px-4 py-3 w-full rounded font-bold transition-colors">
-                            {loading ? "Please wait..." : (mode === "register" ? "Create Account" : "Sign In")}
-                        </button>
-                        <button type="button" onClick={()=>setMode(mode === "register" ? "sign-in" : "register")} className="text-qcGray hover:text-qcRed text-sm font-bold w-full">
-                            {mode === "register" ? "Use an existing account" : "Create a new account"}
+                            {loading ? "Please wait..." : "Sign In"}
                         </button>
                     </form>
                 </div>
