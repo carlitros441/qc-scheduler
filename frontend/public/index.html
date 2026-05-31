@@ -675,6 +675,12 @@
             const [isEditing, setIsEditing] = useState(false);
             const [editFormItem, setEditFormItem] = useState(null);
             const [calendarView, setCalendarView] = useState("dayGridMonth");
+            const [showHoursView, setShowHoursView] = useState("no");
+            const [filterStatus, setFilterStatus] = useState("All");
+            const [filterAssignee, setFilterAssignee] = useState("All");
+            const [filterProductType, setFilterProductType] = useState("All");
+            const [filterProductId, setFilterProductId] = useState("All");
+            const [filterBatchNumber, setFilterBatchNumber] = useState("All");
 
             window.personnelList = personnel; // hack for shared component
 
@@ -683,13 +689,44 @@
             };
             useEffect(() => { fetchSchedules(); }, []);
 
+            const protocolNames = [...new Set(schedules.map(s => s.protocol_name || s.product_type))].filter(Boolean);
+            const productNames = [...new Set(schedules.map(s => s.product_name || s.product_id))].filter(Boolean);
+            const batchNumbers = [...new Set(schedules.map(s => s.batch_number))].filter(Boolean);
+
+            const filterKey = [filterStatus, filterAssignee, filterProductType, filterProductId, filterBatchNumber].join("|");
+            const filteredSchedules = schedules.filter(s => {
+                return (filterStatus === "All" || s.status === filterStatus) &&
+                       (filterAssignee === "All" || s.assignee_id === filterAssignee) &&
+                       (filterProductType === "All" || (s.protocol_name || s.product_type) === filterProductType) &&
+                       (filterProductId === "All" || (s.product_name || s.product_id) === filterProductId) &&
+                       (filterBatchNumber === "All" || s.batch_number === filterBatchNumber);
+            });
+
+            const handleCalendarViewChange = (value) => {
+                setCalendarView(value);
+                if (value === "timeGridWeek" || value === "timeGridDay") {
+                    setShowHoursView(value);
+                } else {
+                    setShowHoursView("no");
+                }
+            };
+
+            const handleHoursViewChange = (value) => {
+                setShowHoursView(value);
+                if (value === "timeGridWeek" || value === "timeGridDay") {
+                    setCalendarView(value);
+                } else if (calendarView === "timeGridWeek" || calendarView === "timeGridDay") {
+                    setCalendarView("dayGridMonth");
+                }
+            };
+
             useEffect(() => {
                 if (calendarRef.current && window.FullCalendar) {
                     const getInitials = (name) => {
                         return name.split(' ').map(n=>n[0]).join('').toUpperCase().substring(0,2);
                     };
 
-                    const events = schedules.map(s => {
+                    const events = filteredSchedules.map(s => {
                         const pName = personnel.find(p => p.id === s.assignee_id)?.name || "Unknown";
                         const initials = getInitials(pName);
                         const title = `${initials}_${s.product_id}_${s.test_name}`;
@@ -723,7 +760,7 @@
                         headerToolbar: {
                             left: 'prev,next today',
                             center: 'title',
-                            right: 'dayGridMonth,timeGridWeek,timeGridDay,listWeek'
+                            right: ''
                         },
                         events: events,
                         eventClick: function(info) {
@@ -739,7 +776,7 @@
                         calendar.destroy();
                     };
                 }
-            }, [schedules, personnel, calendarView]);
+            }, [schedules, personnel, calendarView, filterKey]);
 
             const markComplete = async (id) => {
                 const reason = prompt("Reason for marking this schedule complete:", "Testing completed");
@@ -775,15 +812,65 @@
                 <div className="bg-white p-6 rounded shadow-md border-t-4 border-qcRed">
                     <div className="flex flex-wrap justify-between items-center gap-4 mb-4 border-b pb-2">
                         <h2 className="text-2xl font-bold text-qcGray">QC Schedule Calendar</h2>
-                        <label className="text-sm font-bold text-qcGray flex items-center gap-2">
-                            View
-                            <select className="border p-2 rounded text-sm text-qcGray outline-none" value={calendarView} onChange={e=>setCalendarView(e.target.value)}>
-                                <option value="dayGridMonth">Month</option>
-                                <option value="timeGridWeek">Week</option>
-                                <option value="timeGridDay">Day</option>
-                                <option value="listWeek">List</option>
+                        <div className="flex flex-wrap gap-3">
+                            <label className="text-sm font-bold text-qcGray flex items-center gap-2">
+                                View
+                                <select className="border p-2 rounded text-sm text-qcGray outline-none" value={calendarView} onChange={e=>handleCalendarViewChange(e.target.value)}>
+                                    <option value="dayGridMonth">Month</option>
+                                    <option value="listWeek">List</option>
+                                    <option value="timeGridWeek">Week Hours</option>
+                                    <option value="timeGridDay">Day Hours</option>
+                                </select>
+                            </label>
+                            <label className="text-sm font-bold text-qcGray flex items-center gap-2">
+                                Hours
+                                <select className="border p-2 rounded text-sm text-qcGray outline-none" value={showHoursView} onChange={e=>handleHoursViewChange(e.target.value)}>
+                                    <option value="no">Hidden</option>
+                                    <option value="timeGridWeek">Week</option>
+                                    <option value="timeGridDay">Day</option>
+                                </select>
+                            </label>
+                        </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-4 mb-6 bg-gray-50 p-4 rounded border">
+                        <div>
+                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Status</label>
+                            <select className="border p-2 rounded text-sm text-qcGray outline-none" value={filterStatus} onChange={e=>setFilterStatus(e.target.value)}>
+                                <option value="All">All Statuses</option>
+                                <option value="Scheduled">Scheduled</option>
+                                <option value="Completed">Completed</option>
+                                <option value="Deleted">Deleted</option>
                             </select>
-                        </label>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Assignee</label>
+                            <select className="border p-2 rounded text-sm text-qcGray outline-none" value={filterAssignee} onChange={e=>setFilterAssignee(e.target.value)}>
+                                <option value="All">All Assignees</option>
+                                {personnel.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Protocol Name</label>
+                            <select className="border p-2 rounded text-sm text-qcGray outline-none" value={filterProductType} onChange={e=>setFilterProductType(e.target.value)}>
+                                <option value="All">All Protocols</option>
+                                {protocolNames.map(pt => <option key={pt} value={pt}>{pt}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Product Name</label>
+                            <select className="border p-2 rounded text-sm text-qcGray outline-none" value={filterProductId} onChange={e=>setFilterProductId(e.target.value)}>
+                                <option value="All">All Products</option>
+                                {productNames.map(pid => <option key={pid} value={pid}>{pid}</option>)}
+                            </select>
+                        </div>
+                        <div>
+                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Batch Number</label>
+                            <select className="border p-2 rounded text-sm text-qcGray outline-none" value={filterBatchNumber} onChange={e=>setFilterBatchNumber(e.target.value)}>
+                                <option value="All">All Batches</option>
+                                {batchNumbers.map(bn => <option key={bn} value={bn}>{bn}</option>)}
+                            </select>
+                        </div>
                     </div>
                     <div ref={calendarRef} className="mt-4 fc-theme-standard"></div>
 
