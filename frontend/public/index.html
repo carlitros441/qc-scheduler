@@ -52,7 +52,7 @@
             delete cleanPayload.id;
             cleanPayload.updated_at = firebase.firestore.FieldValue.serverTimestamp();
             if (id) {
-                await db.collection(collectionName).doc(id).set(cleanPayload);
+                await db.collection(collectionName).doc(id).set(cleanPayload, { merge: true });
                 return id;
             }
             const ref = await db.collection(collectionName).add({
@@ -67,12 +67,42 @@
         const getGroupedProtocols = async () => {
             const protocols = await listDocs("protocols");
             return protocols.reduce((grouped, protocol) => {
-                const productType = protocol.product_type || "Unknown";
-                grouped[productType] = grouped[productType] || [];
-                grouped[productType].push(...(protocol.tests || []));
-                grouped[productType] = [...new Set(grouped[productType])];
+                const protocolName = protocol.name || protocol.protocol_id || protocol.product_type || "Unnamed Protocol";
+                grouped[protocolName] = grouped[protocolName] || [];
+                grouped[protocolName].push(...(protocol.tests || []));
+                grouped[protocolName] = [...new Set(grouped[protocolName])];
                 return grouped;
             }, {});
+        };
+
+        const currentUserInfo = () => ({
+            uid: auth.currentUser?.uid || "unknown",
+            email: auth.currentUser?.email || "unknown"
+        });
+
+        const addAuditEntry = async (scheduleId, action, beforeData, afterData, reason) => {
+            const entry = {
+                schedule_id: scheduleId,
+                action,
+                reason: reason || "Not specified",
+                user: currentUserInfo(),
+                before: beforeData || null,
+                after: afterData || null,
+                timestamp: firebase.firestore.FieldValue.serverTimestamp()
+            };
+            const globalRef = await db.collection("auditTrail").add(entry);
+            await db.collection("schedules").doc(scheduleId).collection("auditTrail").doc(globalRef.id).set(entry);
+        };
+
+        const loadAuditTrail = async (scheduleId) => {
+            const snapshot = await db.collection("schedules").doc(scheduleId).collection("auditTrail").orderBy("timestamp", "desc").get();
+            return snapshot.docs.map(toDoc);
+        };
+
+        const formatAuditTimestamp = (value) => {
+            if (!value) return "Pending timestamp";
+            if (value.toDate) return value.toDate().toLocaleString();
+            return String(value);
         };
 
         const makeIcs = (schedule, personnel) => {
@@ -141,7 +171,7 @@
         // =========================================================================
         const CreateScheduleTab = ({ personnel }) => {
             const [protocols, setProtocols] = useState({});
-            const [form, setForm] = useState({ product_id: '', batch_number: '', product_type: '' });
+            const [form, setForm] = useState({ product_id: '', batch_number: '', protocol_name: '' });
             const [testConfigs, setTestConfigs] = useState({});
             const [statusMsg, setStatusMsg] = useState(null);
 
@@ -151,7 +181,7 @@
 
             const handleProductTypeChange = (e) => {
                 const type = e.target.value;
-                setForm({ ...form, product_type: type });
+                setForm({ ...form, protocol_name: type });
                 const requiredTests = protocols[type] || [];
 
                 const newConfigs = {};
@@ -179,7 +209,8 @@
                         payload.push({
                             product_id: form.product_id,
                             batch_number: form.batch_number,
-                            product_type: form.product_type,
+                            product_type: form.protocol_name,
+                            protocol_name: form.protocol_name,
                             test_name: testName,
                             assignee_id: config.assignee_id,
                             start_time: config.start_time,
@@ -194,13 +225,18 @@
 
                 setStatusMsg({type: 'info', text: "Saving schedules..."});
                 try {
-                    await Promise.all(payload.map(item => saveDoc("schedules", {
-                        ...item,
-                        status: "Scheduled",
-                        email_status: "pending"
-                    })));
+                    await Promise.all(payload.map(async item => {
+                        const schedule = {
+                            ...item,
+                            status: "Scheduled",
+                            email_status: "pending",
+                            created_by: currentUserInfo()
+                        };
+                        const id = await saveDoc("schedules", schedule);
+                        await addAuditEntry(id, "CREATE", null, schedule, "Initial schedule creation");
+                    }));
                     setStatusMsg({type: 'success', text: "Schedules saved. Email invites will be sent automatically."});
-                    setForm({ product_id: '', batch_number: '', product_type: '' });
+                    setForm({ product_id: '', batch_number: '', protocol_name: '' });
                     setTestConfigs({});
                 } catch(err) {
                     setStatusMsg({type: 'error', text: "Error saving schedules."});
@@ -221,17 +257,17 @@
                                 <input required className="w-full border p-2 rounded focus:ring-2 focus:ring-qcRed outline-none" type="text" value={form.batch_number} onChange={e => setForm({...form, batch_number: e.target.value})} />
                             </div>
                             <div>
-                                <label className="block text-sm font-bold mb-1 text-qcGray">Product Type</label>
-                                <select required className="w-full border p-2 rounded focus:ring-2 focus:ring-qcRed outline-none" value={form.product_type} onChange={handleProductTypeChange}>
-                                    <option value="">-- Select Type --</option>
+                                <label className="block text-sm font-bold mb-1 text-qcGray">Protocol Name</label>
+                                <select required className="w-full border p-2 rounded focus:ring-2 focus:ring-qcRed outline-none" value={form.protocol_name} onChange={handleProductTypeChange}>
+                                    <option value="">-- Select Protocol --</option>
                                     {Object.keys(protocols).map(pt => <option key={pt} value={pt}>{pt}</option>)}
                                 </select>
                             </div>
                         </div>
 
-                        {form.product_type && Object.keys(testConfigs).length > 0 && (
+                        {form.protocol_name && Object.keys(testConfigs).length > 0 && (
                             <div className="border rounded p-4 bg-white shadow-sm">
-                                <h3 className="font-bold text-lg mb-4 text-qcRed">Tests Required for {form.product_type}</h3>
+                                <h3 className="font-bold text-lg mb-4 text-qcRed">Tests Required for {form.protocol_name}</h3>
                                 {Object.entries(testConfigs).map(([testName, config]) => (
                                     <div key={testName} className={`flex flex-wrap items-center gap-4 mb-4 p-4 border rounded transition-colors ${config.include ? 'bg-red-50 border-red-200' : 'bg-gray-50'}`}>
                                         <div className="w-full md:w-1/4 flex items-center gap-2 font-bold text-qcGray">
@@ -337,12 +373,63 @@
             );
         };
 
+        const AuditTrailModal = ({ schedule, onClose }) => {
+            const [entries, setEntries] = useState([]);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                loadAuditTrail(schedule.id)
+                    .then(setEntries)
+                    .finally(() => setLoading(false));
+            }, [schedule.id]);
+
+            return (
+                <Modal title="GMP Audit Trail" onClose={onClose}>
+                    <div className="space-y-4">
+                        <div className="bg-gray-50 border rounded p-3 text-sm">
+                            <p><strong>Schedule:</strong> {schedule.test_name}</p>
+                            <p><strong>Product:</strong> {schedule.product_id}</p>
+                            <p><strong>Batch:</strong> {schedule.batch_number}</p>
+                        </div>
+                        {loading && <p className="text-sm font-bold text-qcGray">Loading audit trail...</p>}
+                        {!loading && entries.length === 0 && <p className="text-sm font-bold text-gray-500">No audit entries found.</p>}
+                        {!loading && entries.map(entry => (
+                            <div key={entry.id} className="border rounded p-4 bg-white">
+                                <div className="flex justify-between gap-4 border-b pb-2 mb-3">
+                                    <div>
+                                        <p className="font-black text-qcRed">{entry.action}</p>
+                                        <p className="text-xs text-gray-600">{formatAuditTimestamp(entry.timestamp)}</p>
+                                    </div>
+                                    <div className="text-right text-xs text-gray-600">
+                                        <p>{entry.user?.email || "unknown"}</p>
+                                        <p className="font-mono">{entry.user?.uid || ""}</p>
+                                    </div>
+                                </div>
+                                <p className="text-sm mb-3"><strong>Reason:</strong> {entry.reason}</p>
+                                <div className="grid md:grid-cols-2 gap-3 text-xs">
+                                    <div>
+                                        <p className="font-bold text-qcGray mb-1">Before</p>
+                                        <pre className="bg-gray-50 border rounded p-2 overflow-x-auto max-h-52">{JSON.stringify(entry.before, null, 2)}</pre>
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-qcGray mb-1">After</p>
+                                        <pre className="bg-gray-50 border rounded p-2 overflow-x-auto max-h-52">{JSON.stringify(entry.after, null, 2)}</pre>
+                                    </div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </Modal>
+            );
+        };
+
         // =========================================================================
         // TAB 2: SCHEDULES
         // =========================================================================
         const SchedulesTab = ({ personnel }) => {
             const [schedules, setSchedules] = useState([]);
             const [editItem, setEditItem] = useState(null);
+            const [auditItem, setAuditItem] = useState(null);
             const [toast, setToast] = useState(null);
 
             // Filtering
@@ -362,11 +449,21 @@
             useEffect(() => { fetchSchedules(); }, []);
 
             const action = async (id, type) => {
+                const beforeSnap = await db.collection("schedules").doc(id).get();
+                const before = beforeSnap.exists ? { id: beforeSnap.id, ...beforeSnap.data() } : null;
                 if (type === "complete") {
-                    await db.collection("schedules").doc(id).update({ status: "Completed" });
+                    const reason = prompt("Reason for marking this schedule complete:", "Testing completed");
+                    if (reason === null) return;
+                    const after = { ...before, status: "Completed", completed_by: currentUserInfo() };
+                    await saveDoc("schedules", after, id);
+                    await addAuditEntry(id, "COMPLETE", before, after, reason);
                 }
                 if (type === "delete") {
-                    await deleteDoc("schedules", id);
+                    const reason = prompt("Reason for deleting this schedule record:", "Record deleted in app");
+                    if (reason === null) return;
+                    const after = { ...before, status: "Deleted", deleted_by: currentUserInfo() };
+                    await saveDoc("schedules", after, id);
+                    await addAuditEntry(id, "DELETE_STATUS_RETAINED", before, after, reason);
                 }
                 fetchSchedules();
             };
@@ -378,6 +475,7 @@
                         status: "pending",
                         requested_by: auth.currentUser?.email || auth.currentUser?.uid || "unknown"
                     });
+                    await addAuditEntry(id, "RESEND_INVITE_REQUEST", null, { schedule_id: id, status: "pending" }, "User requested invite resend");
                     setToast("Invite resend requested.");
                     setTimeout(() => setToast(null), 4000);
                 } catch (e) {
@@ -387,7 +485,13 @@
             };
 
             const handleEditSave = async (updatedItem) => {
-                await saveDoc("schedules", updatedItem, updatedItem.id);
+                const reason = prompt("Reason for this schedule change:", "Schedule update");
+                if (reason === null) return;
+                const beforeSnap = await db.collection("schedules").doc(updatedItem.id).get();
+                const before = beforeSnap.exists ? { id: beforeSnap.id, ...beforeSnap.data() } : null;
+                const after = { ...updatedItem, updated_by: currentUserInfo() };
+                await saveDoc("schedules", after, updatedItem.id);
+                await addAuditEntry(updatedItem.id, "UPDATE", before, after, reason);
                 setEditItem(null);
                 fetchSchedules();
             };
@@ -438,6 +542,7 @@
                                 <option value="All">All Statuses</option>
                                 <option value="Scheduled">Scheduled</option>
                                 <option value="Completed">Completed</option>
+                                <option value="Deleted">Deleted</option>
                             </select>
                         </div>
                         <div>
@@ -448,9 +553,9 @@
                             </select>
                         </div>
                         <div>
-                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Product Type</label>
+                            <label className="block text-xs font-bold text-qcGray uppercase mb-1">Protocol Name</label>
                             <select className="border p-2 rounded text-sm text-qcGray outline-none" value={filterProductType} onChange={e=>setFilterProductType(e.target.value)}>
-                                <option value="All">All Types</option>
+                                <option value="All">All Protocols</option>
                                 {productTypes.map(pt => <option key={pt} value={pt}>{pt}</option>)}
                             </select>
                         </div>
@@ -506,9 +611,10 @@
                                         </td>
                                         <td className="p-3 space-x-2 text-sm font-bold text-center whitespace-nowrap">
                                             <button onClick={()=>setEditItem(s)} className="text-blue-600 hover:text-blue-800">Edit</button>
-                                            {s.status !== 'Completed' && <button onClick={()=>action(s.id, 'complete')} className="text-green-600 hover:text-green-800">Complete</button>}
-                                            <button onClick={()=>action(s.id, 'delete')} className="text-red-600 hover:text-red-800">Delete</button>
+                                            {!['Completed','Deleted'].includes(s.status) && <button onClick={()=>action(s.id, 'complete')} className="text-green-600 hover:text-green-800">Complete</button>}
+                                            {s.status !== 'Deleted' && <button onClick={()=>action(s.id, 'delete')} className="text-red-600 hover:text-red-800">Delete</button>}
                                             <button onClick={()=>handleResend(s.id)} className="text-indigo-600 hover:text-indigo-800">Resend Invite</button>
+                                            <button onClick={()=>setAuditItem(s)} className="text-purple-700 hover:text-purple-900">Audit</button>
                                             <button onClick={()=>downloadIcs(s, personnel)} className="text-qcGray hover:text-qcRed inline-block bg-gray-200 px-2 py-1 rounded">.ics</button>
                                         </td>
                                     </tr>
@@ -525,6 +631,7 @@
                             <EditScheduleForm editItem={editItem} setEditItem={setEditItem} onSave={handleEditSave} />
                         </Modal>
                     )}
+                    {auditItem && <AuditTrailModal schedule={auditItem} onClose={()=>setAuditItem(null)} />}
                 </div>
             );
         };
@@ -538,6 +645,7 @@
             const [selectedEvent, setSelectedEvent] = useState(null);
             const [isEditing, setIsEditing] = useState(false);
             const [editFormItem, setEditFormItem] = useState(null);
+            const [calendarView, setCalendarView] = useState("dayGridMonth");
 
             window.personnelList = personnel; // hack for shared component
 
@@ -582,11 +690,11 @@
                     });
 
                     const calendar = new window.FullCalendar.Calendar(calendarRef.current, {
-                        initialView: 'dayGridMonth',
+                        initialView: calendarView,
                         headerToolbar: {
                             left: 'prev,next today',
                             center: 'title',
-                            right: 'dayGridMonth,timeGridWeek,timeGridDay'
+                            right: 'dayGridMonth,timeGridWeek,timeGridDay,listWeek'
                         },
                         events: events,
                         eventClick: function(info) {
@@ -602,16 +710,28 @@
                         calendar.destroy();
                     };
                 }
-            }, [schedules, personnel]);
+            }, [schedules, personnel, calendarView]);
 
             const markComplete = async (id) => {
-                await db.collection("schedules").doc(id).update({ status: "Completed" });
+                const reason = prompt("Reason for marking this schedule complete:", "Testing completed");
+                if (reason === null) return;
+                const beforeSnap = await db.collection("schedules").doc(id).get();
+                const before = beforeSnap.exists ? { id: beforeSnap.id, ...beforeSnap.data() } : null;
+                const after = { ...before, status: "Completed", completed_by: currentUserInfo() };
+                await saveDoc("schedules", after, id);
+                await addAuditEntry(id, "COMPLETE", before, after, reason);
                 setSelectedEvent(null);
                 fetchSchedules();
             };
 
             const saveEdit = async (updatedItem) => {
-                await saveDoc("schedules", updatedItem, updatedItem.id);
+                const reason = prompt("Reason for this schedule change:", "Schedule update");
+                if (reason === null) return;
+                const beforeSnap = await db.collection("schedules").doc(updatedItem.id).get();
+                const before = beforeSnap.exists ? { id: beforeSnap.id, ...beforeSnap.data() } : null;
+                const after = { ...updatedItem, updated_by: currentUserInfo() };
+                await saveDoc("schedules", after, updatedItem.id);
+                await addAuditEntry(updatedItem.id, "UPDATE", before, after, reason);
                 setSelectedEvent(null);
                 setIsEditing(false);
                 fetchSchedules();
@@ -624,7 +744,18 @@
 
             return (
                 <div className="bg-white p-6 rounded shadow-md border-t-4 border-qcRed">
-                    <h2 className="text-2xl font-bold mb-4 text-qcGray border-b pb-2">QC Schedule Calendar</h2>
+                    <div className="flex flex-wrap justify-between items-center gap-4 mb-4 border-b pb-2">
+                        <h2 className="text-2xl font-bold text-qcGray">QC Schedule Calendar</h2>
+                        <label className="text-sm font-bold text-qcGray flex items-center gap-2">
+                            View
+                            <select className="border p-2 rounded text-sm text-qcGray outline-none" value={calendarView} onChange={e=>setCalendarView(e.target.value)}>
+                                <option value="dayGridMonth">Month</option>
+                                <option value="timeGridWeek">Week</option>
+                                <option value="timeGridDay">Day</option>
+                                <option value="listWeek">List</option>
+                            </select>
+                        </label>
+                    </div>
                     <div ref={calendarRef} className="mt-4 fc-theme-standard"></div>
 
                     {selectedEvent && (
@@ -638,7 +769,7 @@
                                         <p><strong>Assignee:</strong> <br/>{selectedEvent.assignee_name}</p>
                                         <p><strong>Product ID:</strong> <br/>{selectedEvent.product_id}</p>
                                         <p><strong>Batch:</strong> <br/>{selectedEvent.batch_number}</p>
-                                        <p><strong>Type:</strong> <br/>{selectedEvent.product_type}</p>
+                                        <p><strong>Protocol:</strong> <br/>{selectedEvent.protocol_name || selectedEvent.product_type}</p>
                                         <p>
                                             <strong>Status:</strong><br/>
                                             <span className={`inline-block mt-1 px-3 py-1 rounded-full text-sm font-bold text-white ${selectedEvent.status==='Completed'?'bg-qcGray':'bg-qcRed'}`}>

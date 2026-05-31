@@ -7,7 +7,13 @@ service cloud.firestore {
     }
 
     match /schedules/{document} {
-      allow read, write: if signedIn();
+      allow read, create, update: if signedIn();
+      allow delete: if false;
+    }
+
+    match /schedules/{scheduleId}/auditTrail/{auditId} {
+      allow read, create: if signedIn();
+      allow update, delete: if false;
     }
 
     match /products/{document} {
@@ -27,6 +33,11 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.schedule_id is string
         && request.resource.data.status == "pending";
+      allow update, delete: if false;
+    }
+
+    match /auditTrail/{document} {
+      allow read, create: if signedIn();
       allow update, delete: if false;
     }
   }

@@ -28,10 +28,11 @@ Do not commit service account keys, admin SDK credentials, or SMTP passwords. Th
 - `protocols`
 - `personnel`
 - `mailRequests`
+- `auditTrail`
 
 The app expects signed-in users to read and write these collections. All authorized accounts connect to the same Firebase project and the same shared Firestore database.
 
-`firestore.rules` contains a starter rule set that allows only signed-in users to access the app collections. With these rules, account creation stays under your control in Firebase Auth while every signed-in user has access to the same database.
+`firestore.rules` contains a starter rule set that allows only signed-in users to access the app collections. With these rules, account creation stays under your control in Firebase Auth while every signed-in user has access to the same database. Audit entries can be created and read by signed-in users, but cannot be edited or deleted through the app rules.
 
 ## Automatic Email Invites
 
