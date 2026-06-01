@@ -86,16 +86,17 @@ function sendScheduleInvite_(scheduleId, schedule) {
   }
 
   const ics = buildCalendarInvite_(scheduleId, schedule, assignee);
+  const inviteTitle = buildInviteTitle_(schedule, assignee);
   const senderName = getProperty_('MAIL_FROM_NAME', 'QC Scheduler');
 
   GmailApp.sendEmail(
     assignee.email,
-    `QC Test Assignment: ${schedule.test_name || 'Schedule'}`,
-    `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned a QC test: ${schedule.test_name || 'Schedule'}.\nPlease find the calendar invite attached.`,
+    inviteTitle,
+    `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned a QC test: ${schedule.test_name || 'Schedule'}\n(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})\nBatch Number: ${schedule.batch_number || 'Not specified'}\n\nPlease find the calendar invite attached.`,
     {
       name: senderName,
       attachments: [
-        Utilities.newBlob(ics, 'text/calendar', 'invite.ics')
+        Utilities.newBlob(ics, 'text/calendar', `${inviteTitle}.ics`)
       ]
     }
   );
@@ -112,7 +113,14 @@ function buildCalendarInvite_(scheduleId, schedule, assignee) {
   const product = schedule.product_name || schedule.product_id || '';
   const batch = schedule.batch_number || '';
   const test = schedule.test_name || 'QC Test';
-  const summary = `${product} ${test}`.trim();
+  const summary = buildInviteTitle_(schedule, assignee);
+  const description = [
+    `You have been assigned a QC test: ${test}`,
+    `(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})`,
+    `Batch Number: ${batch || 'Not specified'}`,
+    `Product: ${product || 'Not specified'}`,
+    `Assigned To: ${assignee.name || 'QC team member'} (${assignee.email || ''})`
+  ].join('\n');
   let startLine;
   let endLine;
 
@@ -138,7 +146,7 @@ function buildCalendarInvite_(scheduleId, schedule, assignee) {
     startLine,
     endLine,
     `SUMMARY:${escapeIcsText_(summary)}`,
-    `DESCRIPTION:Product: ${escapeIcsText_(product)} | Batch: ${escapeIcsText_(batch)}\\nProtocol: ${escapeIcsText_(schedule.protocol_name || schedule.product_type || '')}\\nAssigned To: ${escapeIcsText_(assignee.name || 'QC team member')} (${escapeIcsText_(assignee.email || '')})`,
+    `DESCRIPTION:${escapeIcsText_(description)}`,
     'LOCATION:QC Laboratory',
     `ORGANIZER;CN=QC Scheduler:mailto:${getProperty_('MAIL_FROM_EMAIL', Session.getActiveUser().getEmail())}`,
     `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(assignee.name || 'QC team member')}:mailto:${assignee.email}`,
@@ -146,6 +154,21 @@ function buildCalendarInvite_(scheduleId, schedule, assignee) {
     'END:VEVENT',
     'END:VCALENDAR'
   ].join('\r\n');
+}
+
+function buildInviteTitle_(schedule, assignee) {
+  const analystInitials = assignee.initials || initialsFromName_(assignee.name || 'QC Analyst');
+  return `${analystInitials}_${schedule.batch_number || 'NoBatch'}_${schedule.test_name || 'QC Test'}`;
+}
+
+function initialsFromName_(name) {
+  return String(name || 'QC Analyst')
+    .trim()
+    .split(/\s+/)
+    .map(part => part.charAt(0))
+    .join('')
+    .toUpperCase()
+    .substring(0, 3) || 'QA';
 }
 
 function queryFirestore_(collection, field, value, limit) {
