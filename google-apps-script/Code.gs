@@ -91,7 +91,7 @@ function sendScheduleInvite_(scheduleId, schedule) {
   const inviteTitle = buildInviteTitle_(schedule, assignee);
   const senderName = getProperty_('MAIL_FROM_NAME', 'QC Scheduler');
   const actionLinks = buildActionLinks_(scheduleId);
-  const plainBody = `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned as the main analyst for a QC test: ${schedule.test_name || 'Schedule'}\n(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})\nBatch Number: ${schedule.batch_number || 'Not specified'}\nTrainee Analyst: ${trainee && trainee.name ? trainee.name : 'None'}\n\nTest Completed: ${actionLinks.testCompleteUrl}\nReview Completed: ${actionLinks.reviewCompleteUrl}\n\nPlease find the calendar invite attached.`;
+  const plainBody = `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned as the main analyst for a QC test: ${schedule.test_name || 'Schedule'}\n(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})\nBatch Number: ${schedule.batch_number || 'Not specified'}\nQC Sample ID: ${schedule.qc_sample_id || 'Not set'}\nTrainee Analyst: ${trainee && trainee.name ? trainee.name : 'None'}\n\nTest Completed: ${actionLinks.testCompleteUrl}\nReview Completed: ${actionLinks.reviewCompleteUrl}\n\nPlease find the calendar invite attached.`;
   const options = {
     name: senderName,
     htmlBody: buildEmailHtml_(schedule, assignee, trainee, reviewer, actionLinks),
@@ -130,6 +130,7 @@ function buildCalendarInvite_(scheduleId, schedule, assignee, trainee, reviewer)
     `You have been assigned a QC test: ${test}`,
     `(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})`,
     `Batch Number: ${batch || 'Not specified'}`,
+    `QC Sample ID: ${schedule.qc_sample_id || 'Not set'}`,
     `Product: ${product || 'Not specified'}`,
     `Main Analyst: ${assignee.name || 'QC team member'} (${assignee.email || ''})`,
     trainee && trainee.email ? `Trainee Analyst: ${trainee.name || 'Trainee analyst'} (${trainee.email})` : 'Trainee Analyst: None',
@@ -196,6 +197,7 @@ function buildEmailHtml_(schedule, assignee, trainee, reviewer, actionLinks) {
   const test = escapeHtml_(schedule.test_name || 'Schedule');
   const protocol = escapeHtml_(schedule.protocol_name || schedule.product_type || 'Protocol not specified');
   const batch = escapeHtml_(schedule.batch_number || 'Not specified');
+  const sampleId = escapeHtml_(schedule.qc_sample_id || 'Not set');
   const analyst = escapeHtml_(assignee.name || 'QC team member');
   const traineeName = escapeHtml_(trainee && trainee.name ? trainee.name : 'None');
   const reviewerName = escapeHtml_(reviewer && reviewer.name ? reviewer.name : 'Not assigned');
@@ -206,7 +208,7 @@ function buildEmailHtml_(schedule, assignee, trainee, reviewer, actionLinks) {
         <h2 style="margin:0 0 14px;color:#263238">QC test assignment</h2>
         <p>Hello ${analyst},</p>
         <p>You have been assigned as the main analyst for a QC test: <strong>${test}</strong><br><strong>(${protocol})</strong></p>
-        <p><strong>Batch Number:</strong> ${batch}<br><strong>Trainee Analyst:</strong> ${traineeName}<br><strong>QC Reviewer:</strong> ${reviewerName}</p>
+        <p><strong>Batch Number:</strong> ${batch}<br><strong>QC Sample ID:</strong> ${sampleId}<br><strong>Trainee Analyst:</strong> ${traineeName}<br><strong>QC Reviewer:</strong> ${reviewerName}</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin:22px 0">
           <a href="${actionLinks.testCompleteUrl}" style="background:#b11226;color:#ffffff;text-decoration:none;padding:12px 16px;border-radius:7px;font-weight:800;display:inline-block">Test Completed</a>
           <a href="${actionLinks.reviewCompleteUrl}" style="background:#10b981;color:#ffffff;text-decoration:none;padding:12px 16px;border-radius:7px;font-weight:800;display:inline-block">Review Completed</a>
