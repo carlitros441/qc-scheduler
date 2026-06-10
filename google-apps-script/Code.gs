@@ -85,20 +85,28 @@ function sendScheduleInvite_(scheduleId, schedule) {
     throw new Error(`Personnel record ${schedule.assignee_id} has no email address.`);
   }
 
-  const ics = buildCalendarInvite_(scheduleId, schedule, assignee);
+  const reviewer = getReviewer_(schedule);
+  const ics = buildCalendarInvite_(scheduleId, schedule, assignee, reviewer);
   const inviteTitle = buildInviteTitle_(schedule, assignee);
   const senderName = getProperty_('MAIL_FROM_NAME', 'QC Scheduler');
+  const actionLinks = buildActionLinks_(scheduleId);
+  const plainBody = `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned a QC test: ${schedule.test_name || 'Schedule'}\n(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})\nBatch Number: ${schedule.batch_number || 'Not specified'}\n\nTest Completed: ${actionLinks.testCompleteUrl}\nReview Completed: ${actionLinks.reviewCompleteUrl}\n\nPlease find the calendar invite attached.`;
+  const options = {
+    name: senderName,
+    htmlBody: buildEmailHtml_(schedule, assignee, reviewer, actionLinks),
+    attachments: [
+      Utilities.newBlob(ics, 'text/calendar', `${inviteTitle}.ics`)
+    ]
+  };
+  if (reviewer && reviewer.email && reviewer.email !== assignee.email) {
+    options.cc = reviewer.email;
+  }
 
   GmailApp.sendEmail(
     assignee.email,
     inviteTitle,
-    `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned a QC test: ${schedule.test_name || 'Schedule'}\n(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})\nBatch Number: ${schedule.batch_number || 'Not specified'}\n\nPlease find the calendar invite attached.`,
-    {
-      name: senderName,
-      attachments: [
-        Utilities.newBlob(ics, 'text/calendar', `${inviteTitle}.ics`)
-      ]
-    }
+    plainBody,
+    options
   );
 
   patchFirestore_(`schedules/${scheduleId}`, {
@@ -108,7 +116,7 @@ function sendScheduleInvite_(scheduleId, schedule) {
   });
 }
 
-function buildCalendarInvite_(scheduleId, schedule, assignee) {
+function buildCalendarInvite_(scheduleId, schedule, assignee, reviewer) {
   const stamp = calendarDateTime_(new Date());
   const product = schedule.product_name || schedule.product_id || '';
   const batch = schedule.batch_number || '';
@@ -119,7 +127,8 @@ function buildCalendarInvite_(scheduleId, schedule, assignee) {
     `(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})`,
     `Batch Number: ${batch || 'Not specified'}`,
     `Product: ${product || 'Not specified'}`,
-    `Assigned To: ${assignee.name || 'QC team member'} (${assignee.email || ''})`
+    `Assigned To: ${assignee.name || 'QC team member'} (${assignee.email || ''})`,
+    reviewer && reviewer.email ? `QC Reviewer: ${reviewer.name || 'QC reviewer'} (${reviewer.email})` : ''
   ].join('\n');
   let startLine;
   let endLine;
@@ -150,10 +159,58 @@ function buildCalendarInvite_(scheduleId, schedule, assignee) {
     'LOCATION:QC Laboratory',
     `ORGANIZER;CN=QC Scheduler:mailto:${getProperty_('MAIL_FROM_EMAIL', Session.getActiveUser().getEmail())}`,
     `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(assignee.name || 'QC team member')}:mailto:${assignee.email}`,
+    reviewer && reviewer.email ? `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(reviewer.name || 'QC reviewer')}:mailto:${reviewer.email}` : '',
     'STATUS:CONFIRMED',
     'END:VEVENT',
     'END:VCALENDAR'
   ].join('\r\n');
+}
+
+function getReviewer_(schedule) {
+  if (!schedule.reviewer_id) return null;
+  const reviewerDoc = getFirestoreDocument_(`personnel/${schedule.reviewer_id}`);
+  return reviewerDoc.fields;
+}
+
+function buildActionLinks_(scheduleId) {
+  const appUrl = getProperty_('APP_URL', 'https://carlitros441.github.io/QC-Planner/').replace(/\/?$/, '/');
+  return {
+    testCompleteUrl: `${appUrl}?schedule=${encodeURIComponent(scheduleId)}&action=test-complete`,
+    reviewCompleteUrl: `${appUrl}?schedule=${encodeURIComponent(scheduleId)}&action=review-complete`
+  };
+}
+
+function buildEmailHtml_(schedule, assignee, reviewer, actionLinks) {
+  const test = escapeHtml_(schedule.test_name || 'Schedule');
+  const protocol = escapeHtml_(schedule.protocol_name || schedule.product_type || 'Protocol not specified');
+  const batch = escapeHtml_(schedule.batch_number || 'Not specified');
+  const analyst = escapeHtml_(assignee.name || 'QC team member');
+  const reviewerName = escapeHtml_(reviewer && reviewer.name ? reviewer.name : 'Not assigned');
+  return `
+    <div style="font-family:Arial,sans-serif;color:#263238;line-height:1.45;max-width:640px">
+      <div style="border-top:5px solid #b11226;border-radius:8px;border:1px solid #d8dee4;padding:20px;background:#ffffff">
+        <p style="margin:0 0 6px;color:#b11226;font-weight:800;text-transform:uppercase">QC Planner</p>
+        <h2 style="margin:0 0 14px;color:#263238">QC test assignment</h2>
+        <p>Hello ${analyst},</p>
+        <p>You have been assigned a QC test: <strong>${test}</strong><br><strong>(${protocol})</strong></p>
+        <p><strong>Batch Number:</strong> ${batch}<br><strong>QC Reviewer:</strong> ${reviewerName}</p>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin:22px 0">
+          <a href="${actionLinks.testCompleteUrl}" style="background:#b11226;color:#ffffff;text-decoration:none;padding:12px 16px;border-radius:7px;font-weight:800;display:inline-block">Test Completed</a>
+          <a href="${actionLinks.reviewCompleteUrl}" style="background:#10b981;color:#ffffff;text-decoration:none;padding:12px 16px;border-radius:7px;font-weight:800;display:inline-block">Review Completed</a>
+        </div>
+        <p style="color:#64707a;font-size:13px">The buttons open QC Planner. Sign in if prompted, and the status update will be recorded with an audit trail entry.</p>
+      </div>
+    </div>
+  `;
+}
+
+function escapeHtml_(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function buildInviteTitle_(schedule, assignee) {
