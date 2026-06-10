@@ -85,21 +85,25 @@ function sendScheduleInvite_(scheduleId, schedule) {
     throw new Error(`Personnel record ${schedule.assignee_id} has no email address.`);
   }
 
+  const trainee = getTrainee_(schedule);
   const reviewer = getReviewer_(schedule);
-  const ics = buildCalendarInvite_(scheduleId, schedule, assignee, reviewer);
+  const ics = buildCalendarInvite_(scheduleId, schedule, assignee, trainee, reviewer);
   const inviteTitle = buildInviteTitle_(schedule, assignee);
   const senderName = getProperty_('MAIL_FROM_NAME', 'QC Scheduler');
   const actionLinks = buildActionLinks_(scheduleId);
-  const plainBody = `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned a QC test: ${schedule.test_name || 'Schedule'}\n(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})\nBatch Number: ${schedule.batch_number || 'Not specified'}\n\nTest Completed: ${actionLinks.testCompleteUrl}\nReview Completed: ${actionLinks.reviewCompleteUrl}\n\nPlease find the calendar invite attached.`;
+  const plainBody = `Hello ${assignee.name || 'QC team member'},\n\nYou have been assigned as the main analyst for a QC test: ${schedule.test_name || 'Schedule'}\n(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})\nBatch Number: ${schedule.batch_number || 'Not specified'}\nTrainee Analyst: ${trainee && trainee.name ? trainee.name : 'None'}\n\nTest Completed: ${actionLinks.testCompleteUrl}\nReview Completed: ${actionLinks.reviewCompleteUrl}\n\nPlease find the calendar invite attached.`;
   const options = {
     name: senderName,
-    htmlBody: buildEmailHtml_(schedule, assignee, reviewer, actionLinks),
+    htmlBody: buildEmailHtml_(schedule, assignee, trainee, reviewer, actionLinks),
     attachments: [
       Utilities.newBlob(ics, 'text/calendar', `${inviteTitle}.ics`)
     ]
   };
-  if (reviewer && reviewer.email && reviewer.email !== assignee.email) {
-    options.cc = reviewer.email;
+  const ccList = [trainee, reviewer]
+    .filter(person => person && person.email && person.email !== assignee.email)
+    .map(person => person.email);
+  if (ccList.length) {
+    options.cc = ccList.join(',');
   }
 
   GmailApp.sendEmail(
@@ -116,7 +120,7 @@ function sendScheduleInvite_(scheduleId, schedule) {
   });
 }
 
-function buildCalendarInvite_(scheduleId, schedule, assignee, reviewer) {
+function buildCalendarInvite_(scheduleId, schedule, assignee, trainee, reviewer) {
   const stamp = calendarDateTime_(new Date());
   const product = schedule.product_name || schedule.product_id || '';
   const batch = schedule.batch_number || '';
@@ -127,7 +131,8 @@ function buildCalendarInvite_(scheduleId, schedule, assignee, reviewer) {
     `(${schedule.protocol_name || schedule.product_type || 'Protocol not specified'})`,
     `Batch Number: ${batch || 'Not specified'}`,
     `Product: ${product || 'Not specified'}`,
-    `Assigned To: ${assignee.name || 'QC team member'} (${assignee.email || ''})`,
+    `Main Analyst: ${assignee.name || 'QC team member'} (${assignee.email || ''})`,
+    trainee && trainee.email ? `Trainee Analyst: ${trainee.name || 'Trainee analyst'} (${trainee.email})` : 'Trainee Analyst: None',
     reviewer && reviewer.email ? `QC Reviewer: ${reviewer.name || 'QC reviewer'} (${reviewer.email})` : ''
   ].join('\n');
   let startLine;
@@ -159,11 +164,18 @@ function buildCalendarInvite_(scheduleId, schedule, assignee, reviewer) {
     'LOCATION:QC Laboratory',
     `ORGANIZER;CN=QC Scheduler:mailto:${getProperty_('MAIL_FROM_EMAIL', Session.getActiveUser().getEmail())}`,
     `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(assignee.name || 'QC team member')}:mailto:${assignee.email}`,
+    trainee && trainee.email ? `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(trainee.name || 'Trainee analyst')}:mailto:${trainee.email}` : '',
     reviewer && reviewer.email ? `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(reviewer.name || 'QC reviewer')}:mailto:${reviewer.email}` : '',
     'STATUS:CONFIRMED',
     'END:VEVENT',
     'END:VCALENDAR'
   ].join('\r\n');
+}
+
+function getTrainee_(schedule) {
+  if (!schedule.trainee_id) return null;
+  const traineeDoc = getFirestoreDocument_(`personnel/${schedule.trainee_id}`);
+  return traineeDoc.fields;
 }
 
 function getReviewer_(schedule) {
@@ -180,11 +192,12 @@ function buildActionLinks_(scheduleId) {
   };
 }
 
-function buildEmailHtml_(schedule, assignee, reviewer, actionLinks) {
+function buildEmailHtml_(schedule, assignee, trainee, reviewer, actionLinks) {
   const test = escapeHtml_(schedule.test_name || 'Schedule');
   const protocol = escapeHtml_(schedule.protocol_name || schedule.product_type || 'Protocol not specified');
   const batch = escapeHtml_(schedule.batch_number || 'Not specified');
   const analyst = escapeHtml_(assignee.name || 'QC team member');
+  const traineeName = escapeHtml_(trainee && trainee.name ? trainee.name : 'None');
   const reviewerName = escapeHtml_(reviewer && reviewer.name ? reviewer.name : 'Not assigned');
   return `
     <div style="font-family:Arial,sans-serif;color:#263238;line-height:1.45;max-width:640px">
@@ -192,8 +205,8 @@ function buildEmailHtml_(schedule, assignee, reviewer, actionLinks) {
         <p style="margin:0 0 6px;color:#b11226;font-weight:800;text-transform:uppercase">QC Planner</p>
         <h2 style="margin:0 0 14px;color:#263238">QC test assignment</h2>
         <p>Hello ${analyst},</p>
-        <p>You have been assigned a QC test: <strong>${test}</strong><br><strong>(${protocol})</strong></p>
-        <p><strong>Batch Number:</strong> ${batch}<br><strong>QC Reviewer:</strong> ${reviewerName}</p>
+        <p>You have been assigned as the main analyst for a QC test: <strong>${test}</strong><br><strong>(${protocol})</strong></p>
+        <p><strong>Batch Number:</strong> ${batch}<br><strong>Trainee Analyst:</strong> ${traineeName}<br><strong>QC Reviewer:</strong> ${reviewerName}</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap;margin:22px 0">
           <a href="${actionLinks.testCompleteUrl}" style="background:#b11226;color:#ffffff;text-decoration:none;padding:12px 16px;border-radius:7px;font-weight:800;display:inline-block">Test Completed</a>
           <a href="${actionLinks.reviewCompleteUrl}" style="background:#10b981;color:#ffffff;text-decoration:none;padding:12px 16px;border-radius:7px;font-weight:800;display:inline-block">Review Completed</a>
