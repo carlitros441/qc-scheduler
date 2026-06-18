@@ -26,6 +26,8 @@ Do not commit service account keys, admin SDK credentials, or SMTP passwords. Th
 - `schedules`
 - `products`
 - `protocols`
+- `stabilityProtocols`
+- `stabilityPrograms`
 - `personnel`
 - `mailRequests`
 - `auditTrail`
@@ -44,6 +46,7 @@ How it works:
 2. Users can click Resend Invite, which creates a `mailRequests` document.
 3. A Google Apps Script time trigger runs `processPendingEmailInvites` every minute.
 4. The script reads pending Firestore records, sends `.ics` calendar invites through Gmail, and marks records as `sent` or `failed`.
+5. A second weekly trigger can run `sendWeeklyStabilityReminder` every Monday at 8 AM and email upcoming incomplete QC Stability tests to the Personnel record named `Stability Admin`.
 
 Setup:
 
@@ -58,5 +61,8 @@ Setup:
 4. Use the Firebase Admin service account JSON for the Firebase values. Paste `private_key` into `FIREBASE_PRIVATE_KEY`; keep the `\n` line breaks exactly as shown in the JSON.
 5. Run `installEmailTrigger` once from Apps Script and approve permissions.
 6. Run `processPendingEmailInvites` once to test.
+7. Create an active Personnel record named `Stability Admin` with the email address for weekly stability reminders.
+8. Run `installStabilityReminderTrigger` once from Apps Script.
+9. Run `sendWeeklyStabilityReminder` once to test the reminder digest.
 
 Do not commit service account JSON files, private keys, or SMTP passwords.

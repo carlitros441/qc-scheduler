@@ -13,9 +13,56 @@ function installEmailTrigger() {
     .create();
 }
 
+function installStabilityReminderTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter(trigger => trigger.getHandlerFunction() === 'sendWeeklyStabilityReminder')
+    .forEach(trigger => ScriptApp.deleteTrigger(trigger));
+
+  ScriptApp.newTrigger('sendWeeklyStabilityReminder')
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(8)
+    .everyWeeks(1)
+    .create();
+}
+
 function processPendingEmailInvites() {
   processPendingSchedules_();
   processPendingMailRequests_();
+}
+
+function sendWeeklyStabilityReminder() {
+  const personnelDocs = listFirestoreCollection_('personnel', 200);
+  const personnelById = {};
+  personnelDocs.forEach(doc => {
+    personnelById[doc.id] = doc.fields;
+  });
+
+  const adminDoc = personnelDocs.find(doc => {
+    const name = String(doc.fields.name || '').trim().toLowerCase();
+    return name === 'stability admin' && doc.fields.active !== false && doc.fields.email;
+  });
+  if (!adminDoc) {
+    throw new Error('Create an active Personnel record named Stability Admin with an email address.');
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const rows = listFirestoreCollection_('schedules', 500)
+    .map(doc => buildStabilityReminderRow_(doc, personnelById, today))
+    .filter(row => row)
+    .sort((a, b) => a.days_until - b.days_until);
+
+  if (!rows.length) {
+    return;
+  }
+
+  const senderName = getProperty_('MAIL_FROM_NAME', 'QC Scheduler');
+  const subject = `QC Stability weekly reminder - ${rows.length} pending test${rows.length === 1 ? '' : 's'}`;
+  GmailApp.sendEmail(adminDoc.fields.email, subject, buildStabilityReminderPlain_(rows), {
+    name: senderName,
+    htmlBody: buildStabilityReminderHtml_(rows)
+  });
 }
 
 function processPendingSchedules_() {
@@ -241,6 +288,140 @@ function initialsFromName_(name) {
     .join('')
     .toUpperCase()
     .substring(0, 3) || 'QA';
+}
+
+function buildStabilityReminderRow_(doc, personnelById, today) {
+  const schedule = doc.fields;
+  if (!isIncompleteStabilitySchedule_(schedule)) return null;
+
+  const basis = schedule.stability_window_start || schedule.stability_target_date || schedule.start_time;
+  const daysUntil = daysUntil_(basis, today);
+  if (!isFinite(daysUntil) || daysUntil > 90) return null;
+
+  const analyst = personnelById[schedule.assignee_id] || {};
+  const reviewer = personnelById[schedule.reviewer_id] || {};
+  const appUrl = getProperty_('APP_URL', 'https://carlitros441.github.io/QC-Planner/').replace(/\/?$/, '/');
+  return {
+    id: doc.id,
+    priority: daysUntil <= 30 ? 'High' : 'Low',
+    days_until: daysUntil,
+    product_name: schedule.product_name || 'Not specified',
+    batch_number: schedule.batch_number || 'Not specified',
+    time_point: schedule.stability_time_point_label || 'Stability',
+    test_name: schedule.test_name || 'QC test',
+    target_date: schedule.stability_target_date || schedule.start_time || '',
+    window_start: schedule.stability_window_start || '',
+    window_end: schedule.stability_window_end || '',
+    analyst_name: analyst.name || schedule.assignee_id || 'Unassigned',
+    reviewer_name: reviewer.name || schedule.reviewer_id || 'Unassigned',
+    status: schedule.status || 'Scheduled',
+    link: `${appUrl}?schedule=${encodeURIComponent(doc.id)}`
+  };
+}
+
+function isIncompleteStabilitySchedule_(schedule) {
+  if (!schedule.stability_program_id) return false;
+  const status = String(schedule.status || '').toLowerCase();
+  if (status === 'completed' || status === 'deleted') return false;
+  if (Number(schedule.progress || 0) >= 100) return false;
+  return true;
+}
+
+function daysUntil_(dateValue, today) {
+  if (!dateValue) return Number.POSITIVE_INFINITY;
+  const dateText = String(dateValue).split('T')[0];
+  const date = new Date(`${dateText}T00:00:00`);
+  if (isNaN(date.getTime())) return Number.POSITIVE_INFINITY;
+  return Math.ceil((date.getTime() - today.getTime()) / 86400000);
+}
+
+function buildStabilityReminderPlain_(rows) {
+  const highRows = rows.filter(row => row.priority === 'High');
+  const lowRows = rows.filter(row => row.priority === 'Low');
+  return [
+    'QC Stability weekly reminder',
+    '',
+    `High priority within 30 days: ${highRows.length}`,
+    `Upcoming within 90 days: ${lowRows.length}`,
+    '',
+    rows.map(row => `${row.priority}: ${row.batch_number} / ${row.time_point} / ${row.test_name} / Target ${formatReminderDate_(row.target_date)} / Analyst ${row.analyst_name} / ${row.link}`).join('\n')
+  ].join('\n');
+}
+
+function buildStabilityReminderHtml_(rows) {
+  const highRows = rows.filter(row => row.priority === 'High');
+  const lowRows = rows.filter(row => row.priority === 'Low');
+  return `
+    <div style="font-family:Arial,sans-serif;color:#263238;line-height:1.45;max-width:960px">
+      <div style="border-top:5px solid #b11226;border-radius:8px;border:1px solid #d8dee4;padding:20px;background:#ffffff">
+        <p style="margin:0 0 6px;color:#b11226;font-weight:800;text-transform:uppercase">QC Planner</p>
+        <h2 style="margin:0 0 14px;color:#263238">QC Stability weekly reminder</h2>
+        <p><strong>${highRows.length}</strong> high priority pending test${highRows.length === 1 ? '' : 's'} within 30 days and <strong>${lowRows.length}</strong> upcoming pending test${lowRows.length === 1 ? '' : 's'} within 90 days.</p>
+        ${buildStabilityReminderTable_('High priority', highRows, '#b11226')}
+        ${buildStabilityReminderTable_('Upcoming', lowRows, '#0b4a7a')}
+      </div>
+    </div>
+  `;
+}
+
+function buildStabilityReminderTable_(title, rows, color) {
+  if (!rows.length) {
+    return `<h3 style="margin:22px 0 8px;color:${color}">${title}</h3><p style="color:#64707a;margin:0 0 8px">No pending tests in this group.</p>`;
+  }
+
+  const body = rows.map(row => `
+    <tr>
+      <td style="padding:10px;border-bottom:1px solid #e5e7eb"><strong>${escapeHtml_(row.batch_number)}</strong><br><span style="color:#64707a">${escapeHtml_(row.product_name)}</span></td>
+      <td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml_(row.time_point)}</td>
+      <td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml_(row.test_name)}</td>
+      <td style="padding:10px;border-bottom:1px solid #e5e7eb">${formatReminderDate_(row.target_date)}<br><span style="color:#64707a">${formatReminderDate_(row.window_start)} to ${formatReminderDate_(row.window_end)}</span></td>
+      <td style="padding:10px;border-bottom:1px solid #e5e7eb">${escapeHtml_(row.analyst_name)}<br><span style="color:#64707a">Reviewer: ${escapeHtml_(row.reviewer_name)}</span></td>
+      <td style="padding:10px;border-bottom:1px solid #e5e7eb"><a href="${row.link}" style="background:${color};color:#ffffff;text-decoration:none;padding:8px 10px;border-radius:6px;font-weight:800;display:inline-block">Open</a></td>
+    </tr>
+  `).join('');
+
+  return `
+    <h3 style="margin:22px 0 8px;color:${color}">${title}</h3>
+    <table style="border-collapse:collapse;width:100%;font-size:13px">
+      <thead>
+        <tr style="background:#f8fafc;text-align:left">
+          <th style="padding:10px;border-bottom:1px solid #d8dee4">Batch</th>
+          <th style="padding:10px;border-bottom:1px solid #d8dee4">Time Point</th>
+          <th style="padding:10px;border-bottom:1px solid #d8dee4">Test</th>
+          <th style="padding:10px;border-bottom:1px solid #d8dee4">Target / Window</th>
+          <th style="padding:10px;border-bottom:1px solid #d8dee4">Assignment</th>
+          <th style="padding:10px;border-bottom:1px solid #d8dee4">Link</th>
+        </tr>
+      </thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
+function formatReminderDate_(value) {
+  if (!value) return 'Not set';
+  return String(value).split('T')[0];
+}
+
+function listFirestoreCollection_(collectionName, pageSize) {
+  const projectId = getProperty_('FIREBASE_PROJECT_ID');
+  const docs = [];
+  let pageToken = '';
+
+  do {
+    const tokenParam = pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '';
+    const url = `${FIRESTORE_BASE}/${projectId}/databases/(default)/documents/${collectionName}?pageSize=${pageSize || 100}${tokenParam}`;
+    const response = firestoreFetch_(url, 'get');
+    (response.documents || []).forEach(doc => {
+      docs.push({
+        id: doc.name.split('/').pop(),
+        fields: fromFirestoreFields_(doc.fields || {})
+      });
+    });
+    pageToken = response.nextPageToken || '';
+  } while (pageToken);
+
+  return docs;
 }
 
 function queryFirestore_(collection, field, value, limit) {
