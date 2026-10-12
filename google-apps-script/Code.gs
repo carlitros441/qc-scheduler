@@ -127,7 +127,7 @@ function sendScheduleInvite_(scheduleId, schedule) {
   }
 
   const assigneeDoc = getFirestoreDocument_(`personnel/${schedule.assignee_id}`);
-  const assignee = assigneeDoc.fields;
+  const assignee = Object.assign({}, assigneeDoc.fields, { email: performingAnalystEmail_(assigneeDoc.fields.email) });
   if (!assignee.email) {
     throw new Error(`Personnel record ${schedule.assignee_id} has no email address.`);
   }
@@ -147,20 +147,6 @@ function sendScheduleInvite_(scheduleId, schedule) {
       Utilities.newBlob(ics, 'text/calendar', `${inviteTitle}.ics`)
     ]
   };
-  const usedEmails = {};
-  usedEmails[String(assignee.email).trim().toLowerCase()] = true;
-  const ccList = trainees.concat(reviewer ? [reviewer] : [])
-    .filter(person => person && person.email)
-    .map(person => String(person.email).trim())
-    .filter(email => {
-      const key = email.toLowerCase();
-      if (!key || usedEmails[key]) return false;
-      usedEmails[key] = true;
-      return true;
-    });
-  if (ccList.length) {
-    options.cc = ccList.join(',');
-  }
 
   GmailApp.sendEmail(
     assignee.email,
@@ -174,6 +160,14 @@ function sendScheduleInvite_(scheduleId, schedule) {
     email_sent_at: new Date(),
     email_error: null
   });
+}
+
+function performingAnalystEmail_(email) {
+  const primary = String(email || '').split(/[;,]/)[0].trim();
+  if (!/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(primary)) {
+    throw new Error('Performing analyst has no valid primary email address.');
+  }
+  return primary;
 }
 
 function buildCalendarInvite_(scheduleId, schedule, assignee, trainees, reviewer) {
@@ -209,9 +203,6 @@ function buildCalendarInvite_(scheduleId, schedule, assignee, trainees, reviewer
     endLine = `DTEND:${calendarDateTime_(new Date(schedule.end_time))}`;
   }
 
-  const traineeAttendees = trainees
-    .filter(trainee => trainee && trainee.email)
-    .map(trainee => `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(trainee.name || 'Trainee analyst')}:mailto:${trainee.email}`);
 
   return [
     'BEGIN:VCALENDAR',
@@ -227,9 +218,7 @@ function buildCalendarInvite_(scheduleId, schedule, assignee, trainees, reviewer
     `DESCRIPTION:${escapeIcsText_(description)}`,
     'LOCATION:QC Laboratory',
     `ORGANIZER;CN=QC Scheduler:mailto:${getProperty_('MAIL_FROM_EMAIL', Session.getActiveUser().getEmail())}`,
-    `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(assignee.name || 'QC team member')}:mailto:${assignee.email}`,
-    ...traineeAttendees,
-    reviewer && reviewer.email ? `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(reviewer.name || 'QC reviewer')}:mailto:${reviewer.email}` : '',
+    `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(assignee.name || 'QC team member')}:mailto:${performingAnalystEmail_(assignee.email)}`,
     'STATUS:CONFIRMED',
     'END:VEVENT',
     'END:VCALENDAR'
