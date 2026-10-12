@@ -127,7 +127,7 @@ function sendScheduleInvite_(scheduleId, schedule) {
   }
 
   const assigneeDoc = getFirestoreDocument_(`personnel/${schedule.assignee_id}`);
-  const assignee = Object.assign({}, assigneeDoc.fields, { email: performingAnalystEmail_(assigneeDoc.fields.email) });
+  const assignee = Object.assign({}, assigneeDoc.fields, { email: performingAnalystEmails_(assigneeDoc.fields.email).join(',') });
   if (!assignee.email) {
     throw new Error(`Personnel record ${schedule.assignee_id} has no email address.`);
   }
@@ -162,12 +162,12 @@ function sendScheduleInvite_(scheduleId, schedule) {
   });
 }
 
-function performingAnalystEmail_(email) {
-  const primary = String(email || '').split(/[;,]/)[0].trim();
-  if (!/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(primary)) {
-    throw new Error('Performing analyst has no valid primary email address.');
+function performingAnalystEmails_(email) {
+  const addresses = String(email || '').split(/[;,]/).map(value => value.trim()).filter(Boolean);
+  if (!addresses.length || addresses.some(address => !/^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(address))) {
+    throw new Error('Performing analyst has a missing or invalid email address.');
   }
-  return primary;
+  return addresses.filter((address, index) => addresses.findIndex(value => value.toLowerCase() === address.toLowerCase()) === index);
 }
 
 function buildCalendarInvite_(scheduleId, schedule, assignee, trainees, reviewer) {
@@ -218,7 +218,7 @@ function buildCalendarInvite_(scheduleId, schedule, assignee, trainees, reviewer
     `DESCRIPTION:${escapeIcsText_(description)}`,
     'LOCATION:QC Laboratory',
     `ORGANIZER;CN=QC Scheduler:mailto:${getProperty_('MAIL_FROM_EMAIL', Session.getActiveUser().getEmail())}`,
-    `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(assignee.name || 'QC team member')}:mailto:${performingAnalystEmail_(assignee.email)}`,
+    ...performingAnalystEmails_(assignee.email).map(email => `ATTENDEE;CUTYPE=INDIVIDUAL;ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE;CN=${escapeIcsText_(assignee.name || 'QC team member')}:mailto:${email}`),
     'STATUS:CONFIRMED',
     'END:VEVENT',
     'END:VCALENDAR'
